@@ -46,11 +46,28 @@ class DriverOperationsRepository {
   }
 
   Future<void> updateTestLocation() async {
+    await _updateLocation(
+      latitude: -6.4877,
+      longitude: -76.3599,
+    );
+  }
+
+  Future<void> updateTestDestinationLocation() async {
+    await _updateLocation(
+      latitude: -6.4685,
+      longitude: -76.3430,
+    );
+  }
+
+  Future<void> _updateLocation({
+    required double latitude,
+    required double longitude,
+  }) async {
     await _dio.put<Map<String, dynamic>>(
       'drivers/me/location',
       data: {
-        'latitude': -6.4877,
-        'longitude': -76.3599,
+        'latitude': latitude,
+        'longitude': longitude,
         'heading': 0,
         'speed': 0,
         'accuracy': 8,

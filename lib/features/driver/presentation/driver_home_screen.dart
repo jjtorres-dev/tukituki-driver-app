@@ -8,10 +8,10 @@ import 'package:go_router/go_router.dart';
 import '../../auth/data/auth_repository.dart';
 import '../data/driver_offers_repository.dart';
 import '../data/driver_operations_repository.dart';
+import '../data/driver_rides_repository.dart';
 import '../domain/driver_ride_offer.dart';
 
-class DriverHomeScreen
-    extends ConsumerStatefulWidget {
+class DriverHomeScreen extends ConsumerStatefulWidget {
   const DriverHomeScreen({super.key});
 
   @override
@@ -24,6 +24,7 @@ class _DriverHomeScreenState
   bool _loading = false;
   bool _online = false;
   bool _accepting = false;
+  bool _restoringState = true;
 
   DriverRideOffer? _offer;
 
@@ -31,18 +32,129 @@ class _DriverHomeScreenState
   Timer? _offersTimer;
 
   @override
+  void initState() {
+    super.initState();
+
+    _restoreState();
+  }
+
+  @override
   void dispose() {
     _heartbeatTimer?.cancel();
     _offersTimer?.cancel();
+
     super.dispose();
   }
 
+  Future<void> _restoreState() async {
+    bool redirected = false;
+
+    try {
+      final ridesRepository = ref.read(
+        driverRidesRepositoryProvider,
+      );
+
+      final operationsRepository = ref.read(
+        driverOperationsRepositoryProvider,
+      );
+
+      // 1. Primero comprobamos si ya existe
+      // un viaje activo.
+      final activeRide =
+          await ridesRepository.getActiveRide();
+
+      if (!mounted) {
+        return;
+      }
+
+      if (activeRide != null) {
+        redirected = true;
+
+        _heartbeatTimer?.cancel();
+        _offersTimer?.cancel();
+
+        context.go('/active-ride');
+        return;
+      }
+
+      // 2. Si no hay viaje, consultamos
+      // el estado operativo.
+      final status =
+          await operationsRepository.getStatus();
+
+      if (!mounted) {
+        return;
+      }
+
+      // 3. Si backend dice BUSY, comprobamos
+      // nuevamente el viaje antes de mostrar Home.
+      if (status == 'BUSY') {
+        final ride =
+            await ridesRepository.getActiveRide();
+
+        if (!mounted) {
+          return;
+        }
+
+        if (ride != null) {
+          redirected = true;
+
+          _heartbeatTimer?.cancel();
+          _offersTimer?.cancel();
+
+          context.go('/active-ride');
+          return;
+        }
+      }
+
+      setState(() {
+        _online = status == 'AVAILABLE';
+      });
+
+      if (_online) {
+        _startOnlineWorkers();
+      }
+    } catch (error) {
+      debugPrint(
+        'Error restaurando estado del conductor: $error',
+      );
+    } finally {
+      if (mounted && !redirected) {
+        setState(() {
+          _restoringState = false;
+        });
+      }
+    }
+  }
+
   Future<void> _goOnline() async {
+    if (_loading) {
+      return;
+    }
+
     setState(() {
       _loading = true;
     });
 
     try {
+      // Antes de intentar ONLINE,
+      // comprobamos si existe un viaje activo.
+      final activeRide = await ref
+          .read(driverRidesRepositoryProvider)
+          .getActiveRide();
+
+      if (!mounted) {
+        return;
+      }
+
+      if (activeRide != null) {
+        _heartbeatTimer?.cancel();
+        _offersTimer?.cancel();
+
+        context.go('/active-ride');
+        return;
+      }
+
       final repository = ref.read(
         driverOperationsRepositoryProvider,
       );
@@ -57,6 +169,21 @@ class _DriverHomeScreenState
         return;
       }
 
+      if (status == 'BUSY') {
+        final ride = await ref
+            .read(driverRidesRepositoryProvider)
+            .getActiveRide();
+
+        if (!mounted) {
+          return;
+        }
+
+        if (ride != null) {
+          context.go('/active-ride');
+          return;
+        }
+      }
+
       setState(() {
         _online = status == 'AVAILABLE';
       });
@@ -69,12 +196,36 @@ class _DriverHomeScreenState
         return;
       }
 
+      // Un 400 también puede ocurrir porque
+      // el conductor ya tiene viaje y está BUSY.
+      if (error.response?.statusCode == 400) {
+        try {
+          final activeRide = await ref
+              .read(driverRidesRepositoryProvider)
+              .getActiveRide();
+
+          if (!mounted) {
+            return;
+          }
+
+          if (activeRide != null) {
+            _heartbeatTimer?.cancel();
+            _offersTimer?.cancel();
+
+            context.go('/active-ride');
+            return;
+          }
+        } catch (_) {
+          // Seguimos con el mensaje genérico.
+        }
+      }
+
       String message =
           'No se pudo conectar como conductor.';
 
       if (error.response?.statusCode == 400) {
         message =
-            'El vehículo o los documentos no están válidos.';
+            'No se pudo cambiar el estado del conductor.';
       } else if (error.response?.statusCode == 403) {
         message =
             'El conductor todavía no está aprobado.';
@@ -84,7 +235,9 @@ class _DriverHomeScreenState
       }
 
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(message)),
+        SnackBar(
+          content: Text(message),
+        ),
       );
     } finally {
       if (mounted) {
@@ -111,7 +264,9 @@ class _DriverHomeScreenState
 
           await repository.heartbeat();
           await repository.updateTestLocation();
-        } catch (_) {}
+        } catch (_) {
+          // Se intentará nuevamente.
+        }
       },
     );
 
@@ -127,6 +282,24 @@ class _DriverHomeScreenState
     }
 
     try {
+      // Primero verificamos si el conductor
+      // ya recibió/asignó un viaje.
+      final activeRide = await ref
+          .read(driverRidesRepositoryProvider)
+          .getActiveRide();
+
+      if (!mounted) {
+        return;
+      }
+
+      if (activeRide != null) {
+        _heartbeatTimer?.cancel();
+        _offersTimer?.cancel();
+
+        context.go('/active-ride');
+        return;
+      }
+
       final offers = await ref
           .read(driverOffersRepositoryProvider)
           .getActiveOffers();
@@ -140,14 +313,15 @@ class _DriverHomeScreenState
             offers.isEmpty ? null : offers.first;
       });
     } catch (_) {
-      // Seguiremos intentando en el siguiente polling.
+      // Seguiremos intentando
+      // en el siguiente polling.
     }
   }
 
   Future<void> _acceptOffer() async {
     final offer = _offer;
 
-    if (offer == null) {
+    if (offer == null || _accepting) {
       return;
     }
 
@@ -156,27 +330,20 @@ class _DriverHomeScreenState
     });
 
     try {
-      final accepted = await ref
+      await ref
           .read(driverOffersRepositoryProvider)
           .acceptOffer(offer.id);
-
-      _offersTimer?.cancel();
 
       if (!mounted) {
         return;
       }
 
-      setState(() {
-        _offer = null;
-      });
+      // El backend acaba de poner al conductor
+      // BUSY y asignó el viaje.
+      _heartbeatTimer?.cancel();
+      _offersTimer?.cancel();
 
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            '¡Viaje aceptado! Estado: ${accepted.status}',
-          ),
-        ),
-      );
+      context.go('/active-ride');
     } on DioException catch (error) {
       if (!mounted) {
         return;
@@ -194,7 +361,9 @@ class _DriverHomeScreenState
       }
 
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(message)),
+        SnackBar(
+          content: Text(message),
+        ),
       );
 
       await _loadOffers();
@@ -208,11 +377,33 @@ class _DriverHomeScreenState
   }
 
   Future<void> _goOffline() async {
+    if (_loading) {
+      return;
+    }
+
     setState(() {
       _loading = true;
     });
 
     try {
+      // No permitimos intentar OFFLINE
+      // si ya existe un viaje.
+      final activeRide = await ref
+          .read(driverRidesRepositoryProvider)
+          .getActiveRide();
+
+      if (!mounted) {
+        return;
+      }
+
+      if (activeRide != null) {
+        _heartbeatTimer?.cancel();
+        _offersTimer?.cancel();
+
+        context.go('/active-ride');
+        return;
+      }
+
       await ref
           .read(driverOperationsRepositoryProvider)
           .goOffline();
@@ -228,6 +419,35 @@ class _DriverHomeScreenState
         _online = false;
         _offer = null;
       });
+    } on DioException catch (error) {
+      if (!mounted) {
+        return;
+      }
+
+      if (error.response?.statusCode == 400) {
+        try {
+          final activeRide = await ref
+              .read(driverRidesRepositoryProvider)
+              .getActiveRide();
+
+          if (!mounted) {
+            return;
+          }
+
+          if (activeRide != null) {
+            context.go('/active-ride');
+            return;
+          }
+        } catch (_) {}
+      }
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'No se pudo desconectar al conductor.',
+          ),
+        ),
+      );
     } finally {
       if (mounted) {
         setState(() {
@@ -241,25 +461,54 @@ class _DriverHomeScreenState
     _heartbeatTimer?.cancel();
     _offersTimer?.cancel();
 
+    // Solo intentamos OFFLINE si la UI
+    // realmente sabe que está AVAILABLE.
     if (_online) {
       try {
         await ref
             .read(driverOperationsRepositoryProvider)
             .goOffline();
-      } catch (_) {}
+      } catch (_) {
+        // Logout continúa aunque no pueda
+        // cambiar el estado operativo.
+      }
     }
 
     await ref
         .read(authRepositoryProvider)
         .logout();
 
-    if (mounted) {
-      context.go('/login');
+    if (!mounted) {
+      return;
     }
+
+    context.go('/login');
   }
 
   @override
   Widget build(BuildContext context) {
+    if (_restoringState) {
+      return const Scaffold(
+        body: SafeArea(
+          child: Center(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                CircularProgressIndicator(),
+                SizedBox(height: 20),
+                Text(
+                  'Recuperando tu viaje...',
+                  style: TextStyle(
+                    fontSize: 18,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+
     return Scaffold(
       appBar: AppBar(
         title: const Text(
@@ -268,7 +517,9 @@ class _DriverHomeScreenState
         actions: [
           IconButton(
             onPressed: _logout,
-            icon: const Icon(Icons.logout),
+            icon: const Icon(
+              Icons.logout,
+            ),
           ),
         ],
       ),
@@ -301,6 +552,7 @@ class _DriverHomeScreenState
             _online
                 ? 'Estás disponible'
                 : 'Estás desconectado',
+            textAlign: TextAlign.center,
             style: const TextStyle(
               fontSize: 28,
               fontWeight: FontWeight.bold,
@@ -313,6 +565,7 @@ class _DriverHomeScreenState
             _online
                 ? 'Esperando solicitudes de viaje'
                 : 'Conéctate para recibir viajes',
+            textAlign: TextAlign.center,
           ),
 
           const SizedBox(height: 32),
@@ -397,10 +650,12 @@ class _DriverHomeScreenState
               child: Column(
                 children: [
                   ListTile(
-                    leading:
-                        const Icon(Icons.my_location),
-                    title:
-                        const Text('Recoger en'),
+                    leading: const Icon(
+                      Icons.my_location,
+                    ),
+                    title: const Text(
+                      'Recoger en',
+                    ),
                     subtitle: Text(
                       offer.originAddress,
                     ),
@@ -409,10 +664,12 @@ class _DriverHomeScreenState
                   const Divider(),
 
                   ListTile(
-                    leading:
-                        const Icon(Icons.location_on),
-                    title:
-                        const Text('Destino'),
+                    leading: const Icon(
+                      Icons.location_on,
+                    ),
+                    title: const Text(
+                      'Destino',
+                    ),
                     subtitle: Text(
                       offer.destinationAddress,
                     ),
@@ -445,7 +702,9 @@ class _DriverHomeScreenState
                       strokeWidth: 2,
                     ),
                   )
-                : const Icon(Icons.check),
+                : const Icon(
+                    Icons.check,
+                  ),
             label: Padding(
               padding:
                   const EdgeInsets.symmetric(
