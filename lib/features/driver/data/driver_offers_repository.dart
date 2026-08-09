@@ -4,11 +4,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/network/api_client.dart';
 import '../domain/driver_ride_offer.dart';
 
-final driverOffersRepositoryProvider =
-    Provider<DriverOffersRepository>((ref) {
-  return DriverOffersRepository(
-    ref.watch(dioProvider),
-  );
+final driverOffersRepositoryProvider = Provider<DriverOffersRepository>((ref) {
+  return DriverOffersRepository(ref.watch(dioProvider));
 });
 
 class DriverOffersRepository {
@@ -16,37 +13,83 @@ class DriverOffersRepository {
 
   final Dio _dio;
 
-  Future<List<DriverRideOffer>>
-      getActiveOffers() async {
-    final response =
-        await _dio.get<List<dynamic>>(
+  Future<List<DriverRideOffer>> getActiveOffers() async {
+    final response = await _dio.get<List<dynamic>>(
       'drivers/me/ride-offers/active',
     );
 
-    final data = response.data ?? [];
+    final data = response.data ?? const <dynamic>[];
 
-    return data
-        .whereType<Map<String, dynamic>>()
-        .map(DriverRideOffer.fromJson)
-        .toList();
+    final offers = <DriverRideOffer>[];
+
+    for (final item in data) {
+      if (item is! Map) {
+        continue;
+      }
+
+      final json = Map<String, dynamic>.from(item);
+
+      final offer = DriverRideOffer.fromJson(json);
+
+      // El endpoint es de ofertas vigentes,
+      // pero mantenemos una protección extra.
+      if (offer.status == 'OFFERED') {
+        offers.add(offer);
+      }
+    }
+
+    offers.sort((a, b) => a.expiresAt.compareTo(b.expiresAt));
+
+    return offers;
   }
 
-  Future<DriverRideOffer> acceptOffer(
-    String offerId,
-  ) async {
-    final response =
-        await _dio.post<Map<String, dynamic>>(
+  Future<DriverRideOffer> getOffer(String offerId) async {
+    final response = await _dio.get<Map<String, dynamic>>(
+      'drivers/me/ride-offers/$offerId',
+    );
+
+    final data = response.data;
+
+    if (data == null) {
+      throw Exception('El backend devolvió una respuesta vacía.');
+    }
+
+    return DriverRideOffer.fromJson(data);
+  }
+
+  Future<DriverRideOffer> acceptOffer(String offerId) async {
+    final response = await _dio.post<Map<String, dynamic>>(
       'drivers/me/ride-offers/$offerId/accept',
     );
 
     final data = response.data;
 
     if (data == null) {
-      throw Exception(
-        'El backend devolvió una respuesta vacía.',
-      );
+      throw Exception('El backend devolvió una respuesta vacía.');
     }
 
     return DriverRideOffer.fromJson(data);
+  }
+
+  Future<DriverRideOffer> counterOffer(
+    String offerId,
+    String proposedFare,
+  ) async {
+    final response = await _dio.post<Map<String, dynamic>>(
+      'drivers/me/ride-offers/$offerId/counter-offer',
+      data: {'proposedFare': proposedFare},
+    );
+
+    final data = response.data;
+
+    if (data == null) {
+      throw Exception('El backend devolvió una respuesta vacía.');
+    }
+
+    return DriverRideOffer.fromJson(data);
+  }
+
+  Future<void> rejectOffer(String offerId) async {
+    await _dio.post<void>('drivers/me/ride-offers/$offerId/reject');
   }
 }

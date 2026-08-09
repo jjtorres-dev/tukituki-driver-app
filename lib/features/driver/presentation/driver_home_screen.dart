@@ -15,18 +15,23 @@ class DriverHomeScreen extends ConsumerStatefulWidget {
   const DriverHomeScreen({super.key});
 
   @override
-  ConsumerState<DriverHomeScreen> createState() =>
-      _DriverHomeScreenState();
+  ConsumerState<DriverHomeScreen> createState() => _DriverHomeScreenState();
 }
 
-class _DriverHomeScreenState
-    extends ConsumerState<DriverHomeScreen> {
+class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
+    with WidgetsBindingObserver {
   bool _loading = false;
   bool _online = false;
   bool _accepting = false;
   bool _restoringState = true;
 
+  bool _refreshingPresence = false;
+  bool _loadingOffers = false;
+  bool _navigatingToRide = false;
+
   DriverRideOffer? _offer;
+  String? _pendingOfferId;
+  String? _pendingProposedFare;
 
   Timer? _heartbeatTimer;
   Timer? _offersTimer;
@@ -35,62 +40,67 @@ class _DriverHomeScreenState
   void initState() {
     super.initState();
 
-    _restoreState();
+    WidgetsBinding.instance.addObserver(this);
+
+    unawaited(_restoreState());
   }
 
   @override
   void dispose() {
-    _heartbeatTimer?.cancel();
-    _offersTimer?.cancel();
+    WidgetsBinding.instance.removeObserver(this);
+
+    _stopOnlineWorkers();
 
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed && _online && !_navigatingToRide) {
+      debugPrint('DRIVER APP RESUMED - refrescando presencia');
+
+      unawaited(_refreshDriverPresence());
+      unawaited(_loadOffers());
+    }
   }
 
   Future<void> _restoreState() async {
     bool redirected = false;
 
     try {
-      final ridesRepository = ref.read(
-        driverRidesRepositoryProvider,
-      );
+      final ridesRepository = ref.read(driverRidesRepositoryProvider);
 
-      final operationsRepository = ref.read(
-        driverOperationsRepositoryProvider,
-      );
+      final operationsRepository = ref.read(driverOperationsRepositoryProvider);
 
-      // 1. Primero comprobamos si ya existe
-      // un viaje activo.
-      final activeRide =
-          await ridesRepository.getActiveRide();
+      debugPrint('DRIVER RESTORE - verificando viaje activo...');
+
+      final activeRide = await ridesRepository.getActiveRide();
 
       if (!mounted) {
         return;
       }
 
       if (activeRide != null) {
+        debugPrint('DRIVER RESTORE - viaje activo encontrado');
+
         redirected = true;
+        _goToActiveRide();
 
-        _heartbeatTimer?.cancel();
-        _offersTimer?.cancel();
-
-        context.go('/active-ride');
         return;
       }
 
-      // 2. Si no hay viaje, consultamos
-      // el estado operativo.
-      final status =
-          await operationsRepository.getStatus();
+      debugPrint('DRIVER RESTORE - consultando estado operativo...');
+
+      final status = await operationsRepository.getStatus();
+
+      debugPrint('DRIVER RESTORE - status=$status');
 
       if (!mounted) {
         return;
       }
 
-      // 3. Si backend dice BUSY, comprobamos
-      // nuevamente el viaje antes de mostrar Home.
       if (status == 'BUSY') {
-        final ride =
-            await ridesRepository.getActiveRide();
+        final ride = await ridesRepository.getActiveRide();
 
         if (!mounted) {
           return;
@@ -98,26 +108,41 @@ class _DriverHomeScreenState
 
         if (ride != null) {
           redirected = true;
+          _goToActiveRide();
 
-          _heartbeatTimer?.cancel();
-          _offersTimer?.cancel();
-
-          context.go('/active-ride');
           return;
         }
       }
 
+      final isAvailable = status == 'AVAILABLE';
+
       setState(() {
-        _online = status == 'AVAILABLE';
+        _online = isAvailable;
       });
 
-      if (_online) {
-        _startOnlineWorkers();
+      if (isAvailable) {
+        // Muy importante:
+        // no esperamos al primer Timer.
+        // Refrescamos presencia inmediatamente.
+        await _refreshDriverPresence();
+
+        if (!mounted) {
+          return;
+        }
+
+        if (_online) {
+          _startOnlineWorkers();
+        }
       }
-    } catch (error) {
+    } on DioException catch (error) {
       debugPrint(
-        'Error restaurando estado del conductor: $error',
+        'DRIVER RESTORE ERROR '
+        'status=${error.response?.statusCode} '
+        'data=${error.response?.data} '
+        'type=${error.type}',
       );
+    } catch (error) {
+      debugPrint('DRIVER RESTORE ERROR inesperado: $error');
     } finally {
       if (mounted && !redirected) {
         setState(() {
@@ -128,7 +153,7 @@ class _DriverHomeScreenState
   }
 
   Future<void> _goOnline() async {
-    if (_loading) {
+    if (_loading || _navigatingToRide) {
       return;
     }
 
@@ -137,8 +162,6 @@ class _DriverHomeScreenState
     });
 
     try {
-      // Antes de intentar ONLINE,
-      // comprobamos si existe un viaje activo.
       final activeRide = await ref
           .read(driverRidesRepositoryProvider)
           .getActiveRide();
@@ -148,26 +171,17 @@ class _DriverHomeScreenState
       }
 
       if (activeRide != null) {
-        _heartbeatTimer?.cancel();
-        _offersTimer?.cancel();
-
-        context.go('/active-ride');
+        _goToActiveRide();
         return;
       }
 
-      final repository = ref.read(
-        driverOperationsRepositoryProvider,
-      );
+      final repository = ref.read(driverOperationsRepositoryProvider);
 
-      final status =
-          await repository.goOnline();
+      debugPrint('DRIVER ONLINE - conectando...');
 
-      await repository.updateTestLocation();
-      await repository.heartbeat();
+      final status = await repository.goOnline();
 
-      if (!mounted) {
-        return;
-      }
+      debugPrint('DRIVER ONLINE - backend status=$status');
 
       if (status == 'BUSY') {
         final ride = await ref
@@ -179,25 +193,58 @@ class _DriverHomeScreenState
         }
 
         if (ride != null) {
-          context.go('/active-ride');
+          _goToActiveRide();
           return;
         }
       }
 
-      setState(() {
-        _online = status == 'AVAILABLE';
-      });
+      if (status != 'AVAILABLE') {
+        if (!mounted) {
+          return;
+        }
 
-      if (_online) {
-        _startOnlineWorkers();
+        setState(() {
+          _online = false;
+        });
+
+        _showMessage('El backend no dejó al conductor disponible.');
+
+        return;
       }
-    } on DioException catch (error) {
+
       if (!mounted) {
         return;
       }
 
-      // Un 400 también puede ocurrir porque
-      // el conductor ya tiene viaje y está BUSY.
+      setState(() {
+        _online = true;
+      });
+
+      // Inmediatamente después de ONLINE:
+      // heartbeat + GPS.
+      await _refreshDriverPresence();
+
+      if (!mounted) {
+        return;
+      }
+
+      if (_online) {
+        _startOnlineWorkers();
+
+        await _loadOffers();
+      }
+    } on DioException catch (error) {
+      debugPrint(
+        'DRIVER ONLINE ERROR '
+        'status=${error.response?.statusCode} '
+        'data=${error.response?.data} '
+        'type=${error.type}',
+      );
+
+      if (!mounted) {
+        return;
+      }
+
       if (error.response?.statusCode == 400) {
         try {
           final activeRide = await ref
@@ -209,36 +256,28 @@ class _DriverHomeScreenState
           }
 
           if (activeRide != null) {
-            _heartbeatTimer?.cancel();
-            _offersTimer?.cancel();
-
-            context.go('/active-ride');
+            _goToActiveRide();
             return;
           }
-        } catch (_) {
-          // Seguimos con el mensaje genérico.
+        } catch (secondaryError) {
+          debugPrint(
+            'DRIVER ONLINE - error comprobando '
+            'viaje activo: $secondaryError',
+          );
         }
       }
 
-      String message =
-          'No se pudo conectar como conductor.';
+      String message = 'No se pudo conectar como conductor.';
 
       if (error.response?.statusCode == 400) {
-        message =
-            'No se pudo cambiar el estado del conductor.';
+        message = 'No se pudo cambiar el estado del conductor.';
       } else if (error.response?.statusCode == 403) {
-        message =
-            'El conductor todavía no está aprobado.';
+        message = 'El conductor todavía no está aprobado.';
       } else if (error.response == null) {
-        message =
-            'No se pudo conectar con TukiTuki.';
+        message = 'No se pudo conectar con TukiTuki.';
       }
 
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(message),
-        ),
-      );
+      _showMessage(message);
     } finally {
       if (mounted) {
         setState(() {
@@ -249,41 +288,146 @@ class _DriverHomeScreenState
   }
 
   void _startOnlineWorkers() {
-    _heartbeatTimer?.cancel();
-    _offersTimer?.cancel();
+    _stopOnlineWorkers();
 
-    _loadOffers();
-
-    _heartbeatTimer = Timer.periodic(
-      const Duration(seconds: 20),
-      (_) async {
-        try {
-          final repository = ref.read(
-            driverOperationsRepositoryProvider,
-          );
-
-          await repository.heartbeat();
-          await repository.updateTestLocation();
-        } catch (_) {
-          // Se intentará nuevamente.
-        }
-      },
-    );
-
-    _offersTimer = Timer.periodic(
-      const Duration(seconds: 3),
-      (_) => _loadOffers(),
-    );
-  }
-
-  Future<void> _loadOffers() async {
-    if (!_online || _accepting) {
+    if (!_online || _navigatingToRide) {
       return;
     }
 
+    debugPrint('DRIVER WORKERS - iniciados');
+
+    // Lo ejecutamos ya, sin esperar al Timer.
+    unawaited(_refreshDriverPresence());
+    unawaited(_loadOffers());
+
+    // En staging usamos 10 segundos
+    // para mantener lastSeenAt fresco.
+    _heartbeatTimer = Timer.periodic(const Duration(seconds: 10), (_) {
+      unawaited(_refreshDriverPresence());
+    });
+
+    // Revisamos ofertas cada 3 segundos.
+    _offersTimer = Timer.periodic(const Duration(seconds: 3), (_) {
+      unawaited(_loadOffers());
+    });
+  }
+
+  void _stopOnlineWorkers() {
+    _heartbeatTimer?.cancel();
+    _offersTimer?.cancel();
+
+    _heartbeatTimer = null;
+    _offersTimer = null;
+  }
+
+  Future<void> _refreshDriverPresence() async {
+    if (!_online || _refreshingPresence || _navigatingToRide) {
+      return;
+    }
+
+    _refreshingPresence = true;
+
     try {
-      // Primero verificamos si el conductor
-      // ya recibió/asignó un viaje.
+      final repository = ref.read(driverOperationsRepositoryProvider);
+
+      // Heartbeat primero:
+      // el backend confirma que seguimos online.
+      final heartbeatStatus = await repository.heartbeat();
+
+      debugPrint(
+        'DRIVER HEARTBEAT OK '
+        'status=$heartbeatStatus',
+      );
+
+      // Luego refrescamos la ubicación.
+      await repository.updateTestLocation();
+
+      debugPrint(
+        'DRIVER LOCATION OK '
+        'lat=-6.4877 lon=-76.3599',
+      );
+    } on DioException catch (error) {
+      debugPrint(
+        'DRIVER PRESENCE ERROR '
+        'status=${error.response?.statusCode} '
+        'data=${error.response?.data} '
+        'type=${error.type} '
+        'message=${error.message}',
+      );
+
+      // Swagger indica que heartbeat 400 significa
+      // que el conductor está desconectado.
+      if (error.response?.statusCode == 400) {
+        try {
+          final actualStatus = await ref
+              .read(driverOperationsRepositoryProvider)
+              .getStatus();
+
+          debugPrint(
+            'DRIVER PRESENCE - '
+            'status real=$actualStatus',
+          );
+
+          if (!mounted) {
+            return;
+          }
+
+          if (actualStatus == 'BUSY') {
+            final activeRide = await ref
+                .read(driverRidesRepositoryProvider)
+                .getActiveRide();
+
+            if (!mounted) {
+              return;
+            }
+
+            if (activeRide != null) {
+              debugPrint(
+                'DRIVER PRESENCE - '
+                'conductor seleccionado por pasajero',
+              );
+
+              _goToActiveRide();
+              return;
+            }
+          }
+
+          if (actualStatus != 'AVAILABLE') {
+            _stopOnlineWorkers();
+
+            setState(() {
+              _online = false;
+              _offer = null;
+            });
+
+            _showMessage(
+              'El conductor dejó de estar disponible. '
+              'Pulsa Conectarme nuevamente.',
+            );
+          }
+        } catch (statusError) {
+          debugPrint(
+            'DRIVER PRESENCE - '
+            'no se pudo consultar status: '
+            '$statusError',
+          );
+        }
+      }
+    } catch (error) {
+      debugPrint('DRIVER PRESENCE ERROR inesperado: $error');
+    } finally {
+      _refreshingPresence = false;
+    }
+  }
+
+  Future<void> _loadOffers() async {
+    if (!_online || _accepting || _loadingOffers || _navigatingToRide) {
+      return;
+    }
+
+    _loadingOffers = true;
+
+    try {
       final activeRide = await ref
           .read(driverRidesRepositoryProvider)
           .getActiveRide();
@@ -293,35 +437,128 @@ class _DriverHomeScreenState
       }
 
       if (activeRide != null) {
-        _heartbeatTimer?.cancel();
-        _offersTimer?.cancel();
+        debugPrint('DRIVER OFFERS - viaje activo detectado');
 
-        context.go('/active-ride');
+        _goToActiveRide();
         return;
+      }
+
+      final pendingOfferId = _pendingOfferId;
+
+      if (pendingOfferId != null) {
+        try {
+          final pending = await ref
+              .read(driverOffersRepositoryProvider)
+              .getOffer(pendingOfferId);
+
+          if (!mounted) {
+            return;
+          }
+
+          debugPrint(
+            'DRIVER PENDING PROPOSAL '
+            'status=${pending.status}',
+          );
+
+          if (pending.status == 'PROPOSED') {
+            setState(() {
+              _offer = null;
+              _pendingProposedFare =
+                  pending.proposedFare ?? _pendingProposedFare;
+            });
+
+            return;
+          }
+
+          if (pending.status == 'ACCEPTED') {
+            final selectedRide = await ref
+                .read(driverRidesRepositoryProvider)
+                .getActiveRide();
+
+            if (!mounted) {
+              return;
+            }
+
+            if (selectedRide != null) {
+              _goToActiveRide();
+            }
+
+            return;
+          }
+
+          if (pending.status == 'CANCELLED' ||
+              pending.status == 'EXPIRED' ||
+              pending.status == 'REJECTED') {
+            setState(() {
+              _pendingOfferId = null;
+              _pendingProposedFare = null;
+            });
+
+            _showMessage(
+              'La solicitud terminó o el pasajero '
+              'eligió otra propuesta.',
+            );
+          }
+        } on DioException catch (error) {
+          debugPrint(
+            'DRIVER PENDING PROPOSAL ERROR '
+            'status=${error.response?.statusCode}',
+          );
+
+          if (error.response?.statusCode == 404 && mounted) {
+            setState(() {
+              _pendingOfferId = null;
+              _pendingProposedFare = null;
+            });
+          } else {
+            return;
+          }
+        }
       }
 
       final offers = await ref
           .read(driverOffersRepositoryProvider)
           .getActiveOffers();
 
-      if (!mounted) {
+      debugPrint('DRIVER OFFERS OK - cantidad=${offers.length}');
+
+      if (offers.isNotEmpty) {
+        final first = offers.first;
+
+        debugPrint(
+          'DRIVER OFFER FOUND '
+          'status=${first.status} '
+          'distance=${first.distanceToOriginMeters} '
+          'expiresAt=${first.expiresAt}',
+        );
+      }
+
+      if (!mounted || _navigatingToRide) {
         return;
       }
 
       setState(() {
-        _offer =
-            offers.isEmpty ? null : offers.first;
+        _offer = offers.isEmpty ? null : offers.first;
       });
-    } catch (_) {
-      // Seguiremos intentando
-      // en el siguiente polling.
+    } on DioException catch (error) {
+      debugPrint(
+        'DRIVER OFFERS ERROR '
+        'status=${error.response?.statusCode} '
+        'data=${error.response?.data} '
+        'type=${error.type} '
+        'message=${error.message}',
+      );
+    } catch (error) {
+      debugPrint('DRIVER OFFERS ERROR inesperado: $error');
+    } finally {
+      _loadingOffers = false;
     }
   }
 
   Future<void> _acceptOffer() async {
     final offer = _offer;
 
-    if (offer == null || _accepting) {
+    if (offer == null || _accepting || _navigatingToRide) {
       return;
     }
 
@@ -330,45 +567,289 @@ class _DriverHomeScreenState
     });
 
     try {
-      await ref
+      debugPrint('DRIVER OFFER PROPOSAL - enviando...');
+
+      final proposed = await ref
           .read(driverOffersRepositoryProvider)
           .acceptOffer(offer.id);
 
+      debugPrint(
+        'DRIVER OFFER PROPOSAL OK '
+        'status=${proposed.status}',
+      );
+
       if (!mounted) {
         return;
       }
 
-      // El backend acaba de poner al conductor
-      // BUSY y asignó el viaje.
-      _heartbeatTimer?.cancel();
-      _offersTimer?.cancel();
+      setState(() {
+        _offer = null;
+        _pendingOfferId = proposed.id;
+        _pendingProposedFare =
+            proposed.proposedFare ?? offer.passengerOfferFare;
+      });
 
-      context.go('/active-ride');
+      _showMessage('Propuesta enviada al pasajero.');
     } on DioException catch (error) {
+      debugPrint(
+        'DRIVER OFFER ACCEPT ERROR '
+        'status=${error.response?.statusCode} '
+        'data=${error.response?.data}',
+      );
+
       if (!mounted) {
         return;
       }
 
-      String message =
-          'No se pudo aceptar la oferta.';
+      String message = 'No se pudo enviar la propuesta.';
 
       if (error.response?.statusCode == 409) {
-        message =
-            'La oferta ya venció o fue asignada.';
+        message = 'La oferta ya venció o fue asignada.';
+      } else if (error.response?.statusCode == 404) {
+        message = 'La oferta ya no está disponible.';
       } else if (error.response == null) {
-        message =
-            'No se pudo conectar con TukiTuki.';
+        message = 'No se pudo conectar con TukiTuki.';
       }
 
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(message),
-        ),
-      );
+      _showMessage(message);
 
       await _loadOffers();
     } finally {
-      if (mounted) {
+      if (mounted && !_navigatingToRide) {
+        setState(() {
+          _accepting = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _counterOffer() async {
+    final offer = _offer;
+
+    if (offer == null || _accepting || _navigatingToRide) {
+      return;
+    }
+
+    final controller = TextEditingController();
+    String? validationError;
+
+    final proposedFare = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return AlertDialog(
+              title: const Text('Hacer contraoferta'),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'El pasajero ofrece '
+                    'S/ ${offer.passengerOfferFare}',
+                  ),
+                  const SizedBox(height: 16),
+                  TextField(
+                    controller: controller,
+                    autofocus: true,
+                    keyboardType: const TextInputType.numberWithOptions(
+                      decimal: true,
+                    ),
+                    decoration: InputDecoration(
+                      labelText: 'Tu contraoferta',
+                      prefixText: 'S/ ',
+                      errorText: validationError,
+                    ),
+                  ),
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () {
+                    Navigator.of(dialogContext).pop();
+                  },
+                  child: const Text('Cancelar'),
+                ),
+                FilledButton(
+                  onPressed: () {
+                    final raw = controller.text.trim().replaceAll(',', '.');
+
+                    final value = double.tryParse(raw);
+
+                    final passengerValue = double.tryParse(
+                      offer.passengerOfferFare,
+                    );
+
+                    if (value == null || value <= 0) {
+                      setDialogState(() {
+                        validationError = 'Ingresa un monto válido.';
+                      });
+                      return;
+                    }
+
+                    final parts = raw.split('.');
+
+                    if (parts.length > 2 ||
+                        (parts.length == 2 && parts[1].length > 2)) {
+                      setDialogState(() {
+                        validationError = 'Usa como máximo 2 decimales.';
+                      });
+                      return;
+                    }
+
+                    if (passengerValue != null && value <= passengerValue) {
+                      setDialogState(() {
+                        validationError =
+                            'La contraoferta debe ser '
+                            'mayor que S/ '
+                            '${offer.passengerOfferFare}.';
+                      });
+                      return;
+                    }
+
+                    if (value > 9999.99) {
+                      setDialogState(() {
+                        validationError = 'El monto es demasiado alto.';
+                      });
+                      return;
+                    }
+
+                    Navigator.of(dialogContext).pop(value.toStringAsFixed(2));
+                  },
+                  child: const Text('Enviar'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+
+    controller.dispose();
+
+    if (proposedFare == null || !mounted) {
+      return;
+    }
+
+    setState(() {
+      _accepting = true;
+    });
+
+    try {
+      debugPrint(
+        'DRIVER COUNTER OFFER - '
+        'enviando S/ $proposedFare',
+      );
+
+      final proposed = await ref
+          .read(driverOffersRepositoryProvider)
+          .counterOffer(offer.id, proposedFare);
+
+      debugPrint(
+        'DRIVER COUNTER OFFER OK '
+        'status=${proposed.status} '
+        'fare=${proposed.proposedFare}',
+      );
+
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _offer = null;
+        _pendingOfferId = proposed.id;
+        _pendingProposedFare = proposed.proposedFare ?? proposedFare;
+      });
+
+      _showMessage('Contraoferta enviada al pasajero.');
+    } on DioException catch (error) {
+      debugPrint(
+        'DRIVER COUNTER OFFER ERROR '
+        'status=${error.response?.statusCode} '
+        'data=${error.response?.data}',
+      );
+
+      if (!mounted) {
+        return;
+      }
+
+      String message = 'No se pudo enviar la contraoferta.';
+
+      if (error.response?.statusCode == 400) {
+        message =
+            'El monto de la contraoferta '
+            'no es válido.';
+      } else if (error.response?.statusCode == 409) {
+        message =
+            'La oferta ya venció o '
+            'dejó de estar disponible.';
+      } else if (error.response?.statusCode == 404) {
+        message = 'La oferta ya no está disponible.';
+      } else if (error.response == null) {
+        message = 'No se pudo conectar con TukiTuki.';
+      }
+
+      _showMessage(message);
+
+      await _loadOffers();
+    } finally {
+      if (mounted && !_navigatingToRide) {
+        setState(() {
+          _accepting = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _rejectOffer() async {
+    final offer = _offer;
+
+    if (offer == null || _accepting || _navigatingToRide) {
+      return;
+    }
+
+    setState(() {
+      _accepting = true;
+    });
+
+    try {
+      await ref.read(driverOffersRepositoryProvider).rejectOffer(offer.id);
+
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _offer = null;
+      });
+
+      _showMessage('Solicitud rechazada.');
+
+      await _loadOffers();
+    } on DioException catch (error) {
+      debugPrint(
+        'DRIVER OFFER REJECT ERROR '
+        'status=${error.response?.statusCode} '
+        'data=${error.response?.data}',
+      );
+
+      if (!mounted) {
+        return;
+      }
+
+      String message = 'No se pudo rechazar la solicitud.';
+
+      if (error.response?.statusCode == 409) {
+        message = 'La solicitud ya venció o dejó de estar disponible.';
+      } else if (error.response?.statusCode == 404) {
+        message = 'La solicitud ya no está disponible.';
+      } else if (error.response == null) {
+        message = 'No se pudo conectar con TukiTuki.';
+      }
+
+      _showMessage(message);
+    } finally {
+      if (mounted && !_navigatingToRide) {
         setState(() {
           _accepting = false;
         });
@@ -377,7 +858,7 @@ class _DriverHomeScreenState
   }
 
   Future<void> _goOffline() async {
-    if (_loading) {
+    if (_loading || _navigatingToRide) {
       return;
     }
 
@@ -386,8 +867,6 @@ class _DriverHomeScreenState
     });
 
     try {
-      // No permitimos intentar OFFLINE
-      // si ya existe un viaje.
       final activeRide = await ref
           .read(driverRidesRepositoryProvider)
           .getActiveRide();
@@ -397,19 +876,17 @@ class _DriverHomeScreenState
       }
 
       if (activeRide != null) {
-        _heartbeatTimer?.cancel();
-        _offersTimer?.cancel();
-
-        context.go('/active-ride');
+        _goToActiveRide();
         return;
       }
 
-      await ref
+      final status = await ref
           .read(driverOperationsRepositoryProvider)
           .goOffline();
 
-      _heartbeatTimer?.cancel();
-      _offersTimer?.cancel();
+      debugPrint('DRIVER OFFLINE OK status=$status');
+
+      _stopOnlineWorkers();
 
       if (!mounted) {
         return;
@@ -418,8 +895,16 @@ class _DriverHomeScreenState
       setState(() {
         _online = false;
         _offer = null;
+        _pendingOfferId = null;
+        _pendingProposedFare = null;
       });
     } on DioException catch (error) {
+      debugPrint(
+        'DRIVER OFFLINE ERROR '
+        'status=${error.response?.statusCode} '
+        'data=${error.response?.data}',
+      );
+
       if (!mounted) {
         return;
       }
@@ -435,21 +920,21 @@ class _DriverHomeScreenState
           }
 
           if (activeRide != null) {
-            context.go('/active-ride');
+            _goToActiveRide();
             return;
           }
-        } catch (_) {}
+        } catch (secondaryError) {
+          debugPrint(
+            'DRIVER OFFLINE - '
+            'error comprobando viaje: '
+            '$secondaryError',
+          );
+        }
       }
 
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
-            'No se pudo desconectar al conductor.',
-          ),
-        ),
-      );
+      _showMessage('No se pudo desconectar al conductor.');
     } finally {
-      if (mounted) {
+      if (mounted && !_navigatingToRide) {
         setState(() {
           _loading = false;
         });
@@ -458,31 +943,48 @@ class _DriverHomeScreenState
   }
 
   Future<void> _logout() async {
-    _heartbeatTimer?.cancel();
-    _offersTimer?.cancel();
+    _stopOnlineWorkers();
 
-    // Solo intentamos OFFLINE si la UI
-    // realmente sabe que está AVAILABLE.
     if (_online) {
       try {
-        await ref
-            .read(driverOperationsRepositoryProvider)
-            .goOffline();
-      } catch (_) {
-        // Logout continúa aunque no pueda
-        // cambiar el estado operativo.
+        await ref.read(driverOperationsRepositoryProvider).goOffline();
+      } catch (error) {
+        debugPrint(
+          'DRIVER LOGOUT - '
+          'no se pudo poner OFFLINE: $error',
+        );
       }
     }
 
-    await ref
-        .read(authRepositoryProvider)
-        .logout();
+    await ref.read(authRepositoryProvider).logout();
 
     if (!mounted) {
       return;
     }
 
     context.go('/login');
+  }
+
+  void _goToActiveRide() {
+    if (!mounted || _navigatingToRide) {
+      return;
+    }
+
+    _navigatingToRide = true;
+
+    _stopOnlineWorkers();
+
+    context.go('/active-ride');
+  }
+
+  void _showMessage(String message) {
+    if (!mounted) {
+      return;
+    }
+
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
   }
 
   @override
@@ -497,10 +999,8 @@ class _DriverHomeScreenState
                 CircularProgressIndicator(),
                 SizedBox(height: 20),
                 Text(
-                  'Recuperando tu viaje...',
-                  style: TextStyle(
-                    fontSize: 18,
-                  ),
+                  'Recuperando tu estado...',
+                  style: TextStyle(fontSize: 18),
                 ),
               ],
             ),
@@ -511,52 +1011,73 @@ class _DriverHomeScreenState
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text(
-          'TukiTuki Conductor',
-        ),
+        title: const Text('TukiTuki Conductor'),
         actions: [
-          IconButton(
-            onPressed: _logout,
-            icon: const Icon(
-              Icons.logout,
-            ),
-          ),
+          IconButton(onPressed: _logout, icon: const Icon(Icons.logout)),
         ],
       ),
       body: SafeArea(
         child: Padding(
           padding: const EdgeInsets.all(24),
-          child: _offer != null
-              ? _buildOffer(_offer!)
-              : _buildStatus(),
+          child: _offer != null ? _buildOffer(_offer!) : _buildStatus(),
         ),
       ),
     );
   }
 
   Widget _buildStatus() {
+    if (_online && _pendingOfferId != null) {
+      return Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.hourglass_top, size: 90),
+            const SizedBox(height: 24),
+            const Text(
+              'Propuesta enviada',
+              textAlign: TextAlign.center,
+              style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 12),
+            if (_pendingProposedFare != null)
+              Text(
+                'S/ $_pendingProposedFare',
+                style: const TextStyle(
+                  fontSize: 32,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            const SizedBox(height: 16),
+            const Text(
+              'Esperando que el pasajero '
+              'elija a su conductor.',
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 8),
+            const Text(
+              'Sigues disponible mientras '
+              'esperas la respuesta.',
+              textAlign: TextAlign.center,
+            ),
+          ],
+        ),
+      );
+    }
     return Center(
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
           Icon(
-            _online
-                ? Icons.check_circle
-                : Icons.offline_bolt_outlined,
+            _online ? Icons.check_circle : Icons.offline_bolt_outlined,
             size: 90,
           ),
 
           const SizedBox(height: 24),
 
           Text(
-            _online
-                ? 'Estás disponible'
-                : 'Estás desconectado',
+            _online ? 'Estás disponible' : 'Estás desconectado',
             textAlign: TextAlign.center,
-            style: const TextStyle(
-              fontSize: 28,
-              fontWeight: FontWeight.bold,
-            ),
+            style: const TextStyle(fontSize: 28, fontWeight: FontWeight.bold),
           ),
 
           const SizedBox(height: 12),
@@ -576,27 +1097,17 @@ class _DriverHomeScreenState
               onPressed: _loading
                   ? null
                   : _online
-                      ? _goOffline
-                      : _goOnline,
+                  ? _goOffline
+                  : _goOnline,
               child: Padding(
-                padding:
-                    const EdgeInsets.symmetric(
-                  vertical: 16,
-                ),
+                padding: const EdgeInsets.symmetric(vertical: 16),
                 child: _loading
                     ? const SizedBox(
                         width: 22,
                         height: 22,
-                        child:
-                            CircularProgressIndicator(
-                          strokeWidth: 2,
-                        ),
+                        child: CircularProgressIndicator(strokeWidth: 2),
                       )
-                    : Text(
-                        _online
-                            ? 'Desconectarme'
-                            : 'Conectarme',
-                      ),
+                    : Text(_online ? 'Desconectarme' : 'Conectarme'),
               ),
             ),
           ),
@@ -605,40 +1116,59 @@ class _DriverHomeScreenState
     );
   }
 
-  Widget _buildOffer(
-    DriverRideOffer offer,
-  ) {
+  Widget _buildOffer(DriverRideOffer offer) {
     return SingleChildScrollView(
       child: Column(
-        crossAxisAlignment:
-            CrossAxisAlignment.stretch,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           const SizedBox(height: 20),
 
-          const Icon(
-            Icons.notifications_active,
-            size: 72,
-          ),
+          const Icon(Icons.notifications_active, size: 72),
 
           const SizedBox(height: 16),
 
           const Text(
             '¡Nuevo viaje!',
             textAlign: TextAlign.center,
-            style: TextStyle(
-              fontSize: 30,
-              fontWeight: FontWeight.bold,
-            ),
+            style: TextStyle(fontSize: 30, fontWeight: FontWeight.bold),
           ),
 
           const SizedBox(height: 8),
 
+          const Text(
+            'Precio recomendado TukiTuki',
+            textAlign: TextAlign.center,
+          ),
+
+          const SizedBox(height: 6),
+
           Text(
             'S/ ${offer.estimatedFare}',
             textAlign: TextAlign.center,
-            style: const TextStyle(
-              fontSize: 36,
-              fontWeight: FontWeight.bold,
+            style: const TextStyle(fontSize: 24, fontWeight: FontWeight.w600),
+          ),
+
+          const SizedBox(height: 20),
+
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(20),
+              child: Column(
+                children: [
+                  const Text(
+                    'El pasajero ofrece',
+                    style: TextStyle(fontSize: 18),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    'S/ ${offer.passengerOfferFare}',
+                    style: const TextStyle(
+                      fontSize: 38,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ],
+              ),
             ),
           ),
 
@@ -650,29 +1180,17 @@ class _DriverHomeScreenState
               child: Column(
                 children: [
                   ListTile(
-                    leading: const Icon(
-                      Icons.my_location,
-                    ),
-                    title: const Text(
-                      'Recoger en',
-                    ),
-                    subtitle: Text(
-                      offer.originAddress,
-                    ),
+                    leading: const Icon(Icons.my_location),
+                    title: const Text('Recoger en'),
+                    subtitle: Text(offer.originAddress),
                   ),
 
                   const Divider(),
 
                   ListTile(
-                    leading: const Icon(
-                      Icons.location_on,
-                    ),
-                    title: const Text(
-                      'Destino',
-                    ),
-                    subtitle: Text(
-                      offer.destinationAddress,
-                    ),
+                    leading: const Icon(Icons.location_on),
+                    title: const Text('Destino'),
+                    subtitle: Text(offer.destinationAddress),
                   ),
                 ],
               ),
@@ -691,30 +1209,42 @@ class _DriverHomeScreenState
           const SizedBox(height: 28),
 
           FilledButton.icon(
-            onPressed:
-                _accepting ? null : _acceptOffer,
+            onPressed: _accepting ? null : _acceptOffer,
             icon: _accepting
                 ? const SizedBox(
                     width: 20,
                     height: 20,
-                    child:
-                        CircularProgressIndicator(
-                      strokeWidth: 2,
-                    ),
+                    child: CircularProgressIndicator(strokeWidth: 2),
                   )
-                : const Icon(
-                    Icons.check,
-                  ),
+                : const Icon(Icons.check),
             label: Padding(
-              padding:
-                  const EdgeInsets.symmetric(
-                vertical: 16,
-              ),
+              padding: const EdgeInsets.symmetric(vertical: 16),
               child: Text(
                 _accepting
-                    ? 'Aceptando...'
-                    : 'Aceptar viaje',
+                    ? 'Enviando...'
+                    : 'Aceptar S/ '
+                          '${offer.passengerOfferFare}',
               ),
+            ),
+          ),
+
+          const SizedBox(height: 12),
+
+          OutlinedButton.icon(
+            onPressed: _accepting ? null : _counterOffer,
+            icon: const Icon(Icons.edit),
+            label: const Padding(
+              padding: EdgeInsets.symmetric(vertical: 16),
+              child: Text('Hacer contraoferta'),
+            ),
+          ),
+          const SizedBox(height: 8),
+
+          TextButton(
+            onPressed: _accepting ? null : _rejectOffer,
+            child: const Padding(
+              padding: EdgeInsets.symmetric(vertical: 12),
+              child: Text('Rechazar solicitud'),
             ),
           ),
         ],

@@ -9,12 +9,10 @@ class LoginScreen extends ConsumerStatefulWidget {
   const LoginScreen({super.key});
 
   @override
-  ConsumerState<LoginScreen> createState() =>
-      _LoginScreenState();
+  ConsumerState<LoginScreen> createState() => _LoginScreenState();
 }
 
-class _LoginScreenState
-    extends ConsumerState<LoginScreen> {
+class _LoginScreenState extends ConsumerState<LoginScreen> {
   final _formKey = GlobalKey<FormState>();
 
   final _phoneController = TextEditingController();
@@ -41,13 +39,10 @@ class _LoginScreenState
       _loading = true;
     });
 
-    final phone = _phoneController.text
-        .replaceAll(' ', '')
-        .trim();
+    final phone = _phoneController.text.replaceAll(' ', '').trim();
 
     try {
-      final repository =
-          ref.read(authRepositoryProvider);
+      final repository = ref.read(authRepositoryProvider);
 
       await repository.login(
         phoneE164: '+51$phone',
@@ -69,9 +64,7 @@ class _LoginScreenState
 
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text(
-              'Esta cuenta no está habilitada como conductor.',
-            ),
+            content: Text('Esta cuenta no está habilitada como conductor.'),
           ),
         );
 
@@ -84,23 +77,19 @@ class _LoginScreenState
         return;
       }
 
-      String message =
-          'No se pudo iniciar sesión.';
+      String message = 'No se pudo iniciar sesión.';
 
       if (error.response?.statusCode == 401) {
-        message =
-            'Teléfono o contraseña incorrectos.';
+        message = 'Teléfono o contraseña incorrectos.';
       } else if (error.response?.statusCode == 403) {
-        message =
-            'La cuenta no está habilitada.';
+        message = 'La cuenta no está habilitada.';
       } else if (error.response == null) {
-        message =
-            'No se pudo conectar con TukiTuki.';
+        message = 'No se pudo conectar con TukiTuki.';
       }
 
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(message)),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(message)));
     } finally {
       if (mounted) {
         setState(() {
@@ -119,25 +108,18 @@ class _LoginScreenState
           child: Form(
             key: _formKey,
             child: Column(
-              crossAxisAlignment:
-                  CrossAxisAlignment.stretch,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 const SizedBox(height: 70),
 
-                const Icon(
-                  Icons.two_wheeler,
-                  size: 90,
-                ),
+                const Icon(Icons.two_wheeler, size: 90),
 
                 const SizedBox(height: 24),
 
                 const Text(
                   'TukiTuki Conductor',
                   textAlign: TextAlign.center,
-                  style: TextStyle(
-                    fontSize: 30,
-                    fontWeight: FontWeight.bold,
-                  ),
+                  style: TextStyle(fontSize: 30, fontWeight: FontWeight.bold),
                 ),
 
                 const SizedBox(height: 8),
@@ -155,18 +137,13 @@ class _LoginScreenState
                   decoration: const InputDecoration(
                     labelText: 'Número de celular',
                     prefixText: '+51 ',
-                    prefixIcon:
-                        Icon(Icons.phone_android),
+                    prefixIcon: Icon(Icons.phone_android),
                     border: OutlineInputBorder(),
                   ),
                   validator: (value) {
-                    final phone = value
-                            ?.replaceAll(' ', '')
-                            .trim() ??
-                        '';
+                    final phone = value?.replaceAll(' ', '').trim() ?? '';
 
-                    if (!RegExp(r'^[0-9]{9}$')
-                        .hasMatch(phone)) {
+                    if (!RegExp(r'^[0-9]{9}$').hasMatch(phone)) {
                       return 'Ingresa un número válido de 9 dígitos';
                     }
 
@@ -181,15 +158,12 @@ class _LoginScreenState
                   obscureText: _obscurePassword,
                   decoration: InputDecoration(
                     labelText: 'Contraseña',
-                    prefixIcon:
-                        const Icon(Icons.lock_outline),
-                    border:
-                        const OutlineInputBorder(),
+                    prefixIcon: const Icon(Icons.lock_outline),
+                    border: const OutlineInputBorder(),
                     suffixIcon: IconButton(
                       onPressed: () {
                         setState(() {
-                          _obscurePassword =
-                              !_obscurePassword;
+                          _obscurePassword = !_obscurePassword;
                         });
                       },
                       icon: Icon(
@@ -200,8 +174,7 @@ class _LoginScreenState
                     ),
                   ),
                   validator: (value) {
-                    if (value == null ||
-                        value.length < 8) {
+                    if (value == null || value.length < 8) {
                       return 'Ingresa tu contraseña';
                     }
 
@@ -212,26 +185,17 @@ class _LoginScreenState
                 const SizedBox(height: 24),
 
                 FilledButton(
-                  onPressed:
-                      _loading ? null : _login,
+                  onPressed: _loading ? null : _login,
                   style: FilledButton.styleFrom(
-                    padding:
-                        const EdgeInsets.symmetric(
-                      vertical: 16,
-                    ),
+                    padding: const EdgeInsets.symmetric(vertical: 16),
                   ),
                   child: _loading
                       ? const SizedBox(
                           width: 22,
                           height: 22,
-                          child:
-                              CircularProgressIndicator(
-                            strokeWidth: 2,
-                          ),
+                          child: CircularProgressIndicator(strokeWidth: 2),
                         )
-                      : const Text(
-                          'Iniciar sesión',
-                        ),
+                      : const Text('Iniciar sesión'),
                 ),
               ],
             ),

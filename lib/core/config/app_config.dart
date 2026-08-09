@@ -1,9 +1,7 @@
 class AppConfig {
   const AppConfig._();
 
-  static const String apiBaseUrl = String.fromEnvironment(
-    'API_BASE_URL',
-  );
+  static const String apiBaseUrl = String.fromEnvironment('API_BASE_URL');
 
   static String get normalizedApiBaseUrl {
     final value = apiBaseUrl.trim();

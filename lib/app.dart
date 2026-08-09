@@ -14,10 +14,7 @@ class TukiTukiDriverApp extends StatelessWidget {
       theme: ThemeData(
         useMaterial3: true,
         colorSchemeSeed: Colors.amber,
-        inputDecorationTheme:
-            const InputDecorationTheme(
-          filled: true,
-        ),
+        inputDecorationTheme: const InputDecorationTheme(filled: true),
       ),
     );
   }

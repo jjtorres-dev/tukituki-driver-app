@@ -27,26 +27,18 @@ class DriverRidePayment {
 
   final String currency;
 
-  factory DriverRidePayment.fromJson(
-    Map<String, dynamic> json,
-  ) {
+  factory DriverRidePayment.fromJson(Map<String, dynamic> json) {
     return DriverRidePayment(
       id: json['id']?.toString() ?? '',
       rideId: json['rideId']?.toString() ?? '',
       method: json['method']?.toString() ?? 'CASH',
       status: json['status']?.toString() ?? 'PENDING',
-      amountDue:
-          json['amountDue']?.toString() ?? '0.00',
-      grossAmount:
-          json['grossAmount']?.toString() ?? '0.00',
-      discountAmount:
-          json['discountAmount']?.toString() ?? '0.00',
-      cashReceived:
-          json['cashReceived']?.toString(),
-      changeGiven:
-          json['changeGiven']?.toString(),
-      currency:
-          json['currency']?.toString() ?? 'PEN',
+      amountDue: json['amountDue']?.toString() ?? '0.00',
+      grossAmount: json['grossAmount']?.toString() ?? '0.00',
+      discountAmount: json['discountAmount']?.toString() ?? '0.00',
+      cashReceived: json['cashReceived']?.toString(),
+      changeGiven: json['changeGiven']?.toString(),
+      currency: json['currency']?.toString() ?? 'PEN',
     );
   }
 }

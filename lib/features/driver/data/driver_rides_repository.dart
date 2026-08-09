@@ -5,11 +5,8 @@ import '../../../core/network/api_client.dart';
 import '../domain/driver_active_ride.dart';
 import '../domain/driver_ride_completion.dart';
 
-final driverRidesRepositoryProvider =
-    Provider<DriverRidesRepository>((ref) {
-  return DriverRidesRepository(
-    ref.watch(dioProvider),
-  );
+final driverRidesRepositoryProvider = Provider<DriverRidesRepository>((ref) {
+  return DriverRidesRepository(ref.watch(dioProvider));
 });
 
 class DriverRidesRepository {
@@ -19,8 +16,7 @@ class DriverRidesRepository {
 
   Future<DriverActiveRide?> getActiveRide() async {
     try {
-      final response =
-          await _dio.get<Map<String, dynamic>>(
+      final response = await _dio.get<Map<String, dynamic>>(
         'drivers/me/rides/active',
       );
 
@@ -40,11 +36,8 @@ class DriverRidesRepository {
     }
   }
 
-  Future<DriverActiveRide> getRide(
-    String rideId,
-  ) async {
-    final response =
-        await _dio.get<Map<String, dynamic>>(
+  Future<DriverActiveRide> getRide(String rideId) async {
+    final response = await _dio.get<Map<String, dynamic>>(
       'drivers/me/rides/$rideId',
     );
 
@@ -52,29 +45,25 @@ class DriverRidesRepository {
 
     if (data == null) {
       throw Exception(
-        'El backend devolvió una respuesta vacía.',
+        'El backend devolvió '
+        'una respuesta vacía.',
       );
     }
 
     return DriverActiveRide.fromJson(data);
   }
 
-  Future<DriverActiveRide> startArrival(
-    String rideId,
-  ) async {
+  Future<DriverActiveRide> startArrival(String rideId) async {
     await _dio.post<Map<String, dynamic>>(
-      'drivers/me/rides/$rideId/start-arrival',
+      'drivers/me/rides/'
+      '$rideId/start-arrival',
     );
 
     return getRide(rideId);
   }
 
-  Future<DriverActiveRide> arrive(
-    String rideId,
-  ) async {
-    await _dio.post<Map<String, dynamic>>(
-      'drivers/me/rides/$rideId/arrive',
-    );
+  Future<DriverActiveRide> arrive(String rideId) async {
+    await _dio.post<Map<String, dynamic>>('drivers/me/rides/$rideId/arrive');
 
     return getRide(rideId);
   }
@@ -85,23 +74,19 @@ class DriverRidesRepository {
   }) async {
     await _dio.post<Map<String, dynamic>>(
       'drivers/me/rides/$rideId/start',
-      data: {
-        'code': code,
-      },
+      data: {'code': code},
     );
 
     return getRide(rideId);
   }
 
-  Future<DriverRideCompletion> completeRide({
-    required String rideId,
-  }) async {
-    final response =
-        await _dio.post<Map<String, dynamic>>(
+  Future<DriverRideCompletion> completeRide({required String rideId}) async {
+    final response = await _dio.post<Map<String, dynamic>>(
       'drivers/me/rides/$rideId/complete',
       data: {
         'completionNotes':
-            'Viaje de prueba completado en destino',
+            'Viaje completado '
+            'desde Driver App staging',
       },
     );
 
@@ -109,7 +94,8 @@ class DriverRidesRepository {
 
     if (data == null) {
       throw Exception(
-        'El backend no devolvió la finalización del viaje.',
+        'El backend no devolvió '
+        'la finalización del viaje.',
       );
     }
 

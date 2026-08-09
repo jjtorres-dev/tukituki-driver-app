@@ -9,33 +9,24 @@ final appRouter = GoRouter(
   initialLocation: '/login',
 
   routes: [
-    GoRoute(
-      path: '/login',
-      builder: (context, state) =>
-          const LoginScreen(),
-    ),
+    GoRoute(path: '/login', builder: (context, state) => const LoginScreen()),
 
     GoRoute(
       path: '/home',
-      builder: (context, state) =>
-          const DriverHomeScreen(),
+      builder: (context, state) => const DriverHomeScreen(),
     ),
 
     GoRoute(
       path: '/active-ride',
-      builder: (context, state) =>
-          const DriverActiveRideScreen(),
+      builder: (context, state) => const DriverActiveRideScreen(),
     ),
 
     GoRoute(
       path: '/cash-payment/:rideId',
       builder: (context, state) {
-        final rideId =
-            state.pathParameters['rideId']!;
+        final rideId = state.pathParameters['rideId']!;
 
-        return DriverCashPaymentScreen(
-          rideId: rideId,
-        );
+        return DriverCashPaymentScreen(rideId: rideId);
       },
     ),
   ],

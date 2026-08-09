@@ -1,21 +1,18 @@
 import 'dart:async';
 
 import 'package:dio/dio.dart';
-import 'package:go_router/go_router.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 
 import '../data/driver_operations_repository.dart';
 import '../data/driver_rides_repository.dart';
 import '../domain/driver_active_ride.dart';
 import '../domain/driver_ride_completion.dart';
 
-class DriverActiveRideScreen
-    extends ConsumerStatefulWidget {
-  const DriverActiveRideScreen({
-    super.key,
-  });
+class DriverActiveRideScreen extends ConsumerStatefulWidget {
+  const DriverActiveRideScreen({super.key});
 
   @override
   ConsumerState<DriverActiveRideScreen> createState() =>
@@ -24,14 +21,14 @@ class DriverActiveRideScreen
 
 class _DriverActiveRideScreenState
     extends ConsumerState<DriverActiveRideScreen> {
-  final _codeController =
-      TextEditingController();
+  final _codeController = TextEditingController();
 
   DriverActiveRide? _ride;
   DriverRideCompletion? _completion;
 
   bool _loading = true;
   bool _changingStatus = false;
+  bool _activityInFlight = false;
 
   String? _error;
 
@@ -42,46 +39,95 @@ class _DriverActiveRideScreenState
   void initState() {
     super.initState();
 
-    _loadRide();
+    unawaited(_loadRide());
 
-    _rideTimer = Timer.periodic(
-      const Duration(seconds: 3),
-      (_) => _loadRide(
-        showLoading: false,
-      ),
-    );
+    _rideTimer = Timer.periodic(const Duration(seconds: 3), (_) {
+      unawaited(_loadRide(showLoading: false));
+    });
 
-    _activityTimer = Timer.periodic(
-      const Duration(seconds: 15),
-      (_) => _sendDriverActivity(),
-    );
+    _startActivityTimer();
 
-    _sendDriverActivity();
+    unawaited(_sendDriverActivity());
   }
 
   @override
   void dispose() {
     _rideTimer?.cancel();
     _activityTimer?.cancel();
+
     _codeController.dispose();
 
     super.dispose();
   }
 
-  Future<void> _sendDriverActivity() async {
-    try {
-      final repository = ref.read(
-        driverOperationsRepositoryProvider,
-      );
+  void _startActivityTimer() {
+    _activityTimer?.cancel();
 
-      await repository.updateTestLocation();
-      await repository.heartbeat();
-    } catch (_) {}
+    _activityTimer = Timer.periodic(const Duration(seconds: 10), (_) {
+      unawaited(_sendDriverActivity());
+    });
   }
 
-  Future<void> _loadRide({
-    bool showLoading = true,
-  }) async {
+  Future<void> _sendDriverActivity() async {
+    if (_activityInFlight || _completion != null) {
+      return;
+    }
+
+    _activityInFlight = true;
+
+    try {
+      final repository = ref.read(driverOperationsRepositoryProvider);
+
+      final ride = _ride;
+
+      // Mantiene viva la presencia del conductor.
+      await repository.heartbeat();
+
+      // IMPORTANTE:
+      //
+      // Mientras todavía estamos recogiendo
+      // al pasajero mantenemos la ubicación
+      // simulada en el origen.
+      //
+      // Cuando el viaje ya está IN_PROGRESS
+      // NO debemos volver a escribir el origen,
+      // porque podría pisar la ubicación final
+      // justo antes de completar el viaje.
+      if (ride == null ||
+          ride.status == 'DRIVER_ASSIGNED' ||
+          ride.status == 'DRIVER_ARRIVING' ||
+          ride.status == 'DRIVER_ARRIVED') {
+        await repository.updateTestLocation();
+      }
+
+      debugPrint(
+        'DRIVER ACTIVE ACTIVITY OK '
+        'status=${ride?.status}',
+      );
+    } on DioException catch (error) {
+      debugPrint(
+        'DRIVER ACTIVE ACTIVITY ERROR '
+        'status=${error.response?.statusCode} '
+        'data=${error.response?.data}',
+      );
+    } catch (error) {
+      debugPrint('DRIVER ACTIVE ACTIVITY ERROR: $error');
+    } finally {
+      _activityInFlight = false;
+    }
+  }
+
+  Future<void> _waitForActivityToFinish() async {
+    var attempts = 0;
+
+    while (_activityInFlight && attempts < 50) {
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+
+      attempts++;
+    }
+  }
+
+  Future<void> _loadRide({bool showLoading = true}) async {
     if (showLoading && mounted) {
       setState(() {
         _loading = true;
@@ -100,8 +146,7 @@ class _DriverActiveRideScreenState
       if (ride == null) {
         setState(() {
           _ride = null;
-          _error =
-              'No encontramos un viaje activo.';
+          _error = 'No encontramos un viaje activo.';
           _loading = false;
         });
 
@@ -113,14 +158,30 @@ class _DriverActiveRideScreenState
         _error = null;
         _loading = false;
       });
-    } catch (_) {
+    } on DioException catch (error) {
+      debugPrint(
+        'DRIVER ACTIVE LOAD ERROR '
+        'status=${error.response?.statusCode} '
+        'data=${error.response?.data}',
+      );
+
       if (!mounted) {
         return;
       }
 
       setState(() {
-        _error =
-            'No se pudo actualizar el viaje.';
+        _error = 'No se pudo actualizar el viaje.';
+        _loading = false;
+      });
+    } catch (error) {
+      debugPrint('DRIVER ACTIVE LOAD ERROR: $error');
+
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _error = 'No se pudo actualizar el viaje.';
         _loading = false;
       });
     }
@@ -149,6 +210,27 @@ class _DriverActiveRideScreenState
       setState(() {
         _ride = updatedRide;
       });
+
+      unawaited(_sendDriverActivity());
+    } on DioException catch (error) {
+      debugPrint(
+        'START ARRIVAL ERROR '
+        'status=${error.response?.statusCode} '
+        'data=${error.response?.data}',
+      );
+
+      if (!mounted) {
+        return;
+      }
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'No se pudo iniciar el trayecto '
+            'hacia el pasajero.',
+          ),
+        ),
+      );
     } finally {
       if (mounted) {
         setState(() {
@@ -170,9 +252,11 @@ class _DriverActiveRideScreenState
     });
 
     try {
-      await ref
-          .read(driverOperationsRepositoryProvider)
-          .updateTestLocation();
+      final operationsRepository = ref.read(driverOperationsRepositoryProvider);
+
+      await operationsRepository.heartbeat();
+
+      await operationsRepository.updateTestLocation();
 
       final updatedRide = await ref
           .read(driverRidesRepositoryProvider)
@@ -190,20 +274,107 @@ class _DriverActiveRideScreenState
         return;
       }
 
-      String message =
-          'No se pudo registrar la llegada.';
+      String message = 'No se pudo registrar la llegada.';
 
       if (error.response?.statusCode == 400) {
         message =
             'El GPS no es válido o estás '
             'demasiado lejos del pasajero.';
+      } else if (error.response == null) {
+        message = 'No se pudo conectar con TukiTuki.';
       }
 
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(message)));
+    } finally {
+      if (mounted) {
+        setState(() {
+          _changingStatus = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _startRide() async {
+    final ride = _ride;
+
+    final code = _codeController.text.trim();
+
+    if (ride == null || _changingStatus) {
+      return;
+    }
+
+    if (!RegExp(r'^\d{4}$').hasMatch(code)) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(message),
-        ),
+        const SnackBar(content: Text('Ingresa el código de 4 dígitos.')),
       );
+
+      return;
+    }
+
+    FocusScope.of(context).unfocus();
+
+    setState(() {
+      _changingStatus = true;
+    });
+
+    try {
+      final operationsRepository = ref.read(driverOperationsRepositoryProvider);
+
+      // Marcamos explícitamente el punto
+      // donde comienza el viaje.
+      await operationsRepository.heartbeat();
+
+      await operationsRepository.updateTestLocation();
+
+      final updatedRide = await ref
+          .read(driverRidesRepositoryProvider)
+          .startRide(rideId: ride.id, code: code);
+
+      if (!mounted) {
+        return;
+      }
+
+      _codeController.clear();
+
+      setState(() {
+        _ride = updatedRide;
+      });
+
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('¡Viaje iniciado!')));
+    } on DioException catch (error) {
+      if (!mounted) {
+        return;
+      }
+
+      String message = 'No se pudo iniciar el viaje.';
+
+      if (error.response?.statusCode == 400) {
+        message =
+            'El código es incorrecto o '
+            'el GPS no es válido.';
+      } else if (error.response?.statusCode == 409) {
+        message =
+            'El viaje no está en un '
+            'estado compatible.';
+      } else if (error.response?.statusCode == 410) {
+        message =
+            'El código venció. '
+            'Solicita uno nuevo.';
+      } else if (error.response?.statusCode == 423) {
+        message =
+            'El código fue bloqueado por '
+            'demasiados intentos.';
+      } else if (error.response == null) {
+        message = 'No se pudo conectar con TukiTuki.';
+      }
+
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(message)));
     } finally {
       if (mounted) {
         setState(() {
@@ -224,22 +395,34 @@ class _DriverActiveRideScreenState
       _changingStatus = true;
     });
 
-    try {
-      // Simulamos que el conductor llegó
-      // exactamente al destino.
-      await ref
-          .read(driverOperationsRepositoryProvider)
-          .updateTestDestinationLocation();
+    // MUY IMPORTANTE:
+    //
+    // Detenemos primero cualquier actualización
+    // periódica para impedir que una ubicación
+    // vieja del origen pise el destino.
+    _activityTimer?.cancel();
+    _activityTimer = null;
 
-      await ref
-          .read(driverOperationsRepositoryProvider)
-          .heartbeat();
+    try {
+      await _waitForActivityToFinish();
+
+      final operationsRepository = ref.read(driverOperationsRepositoryProvider);
+
+      // Primero mantenemos la presencia viva.
+      await operationsRepository.heartbeat();
+
+      // Esta debe ser la ÚLTIMA ubicación enviada
+      // antes de llamar /complete.
+      await operationsRepository.updateTestDestinationLocation();
+
+      debugPrint(
+        'DRIVER COMPLETE - '
+        'ubicación final enviada',
+      );
 
       final completion = await ref
           .read(driverRidesRepositoryProvider)
-          .completeRide(
-            rideId: ride.id,
-          );
+          .completeRide(rideId: ride.id);
 
       if (!mounted) {
         return;
@@ -252,136 +435,41 @@ class _DriverActiveRideScreenState
         _completion = completion;
       });
 
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
-            '¡Viaje completado!',
-          ),
-        ),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('¡Viaje completado!')));
     } on DioException catch (error) {
+      debugPrint(
+        'DRIVER COMPLETE ERROR '
+        'status=${error.response?.statusCode} '
+        'data=${error.response?.data}',
+      );
+
       if (!mounted) {
         return;
       }
 
-      String message =
-          'No se pudo finalizar el viaje.';
+      String message = 'No se pudo finalizar el viaje.';
 
       if (error.response?.statusCode == 400) {
         message =
-            'El GPS no es válido o todavía estás lejos del destino.';
+            'El GPS no es válido o todavía '
+            'estás lejos del destino.';
       } else if (error.response?.statusCode == 409) {
         message =
-            'El viaje no está en un estado compatible.';
+            'El viaje no está en un '
+            'estado compatible.';
       } else if (error.response == null) {
-        message =
-            'No se pudo conectar con TukiTuki.';
+        message = 'No se pudo conectar con TukiTuki.';
       }
 
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(message),
-        ),
-      );
-    } finally {
-      if (mounted) {
-        setState(() {
-          _changingStatus = false;
-        });
-      }
-    }
-  }
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(message)));
 
-  Future<void> _startRide() async {
-    final ride = _ride;
-    final code = _codeController.text.trim();
-
-    if (ride == null || _changingStatus) {
-      return;
-    }
-
-    if (!RegExp(r'^\d{4}$').hasMatch(code)) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
-            'Ingresa el código de 4 dígitos.',
-          ),
-        ),
-      );
-
-      return;
-    }
-
-    FocusScope.of(context).unfocus();
-
-    setState(() {
-      _changingStatus = true;
-    });
-
-    try {
-      await ref
-          .read(driverOperationsRepositoryProvider)
-          .updateTestLocation();
-
-      final updatedRide = await ref
-          .read(driverRidesRepositoryProvider)
-          .startRide(
-            rideId: ride.id,
-            code: code,
-          );
-
-      if (!mounted) {
-        return;
-      }
-
-      _codeController.clear();
-
-      setState(() {
-        _ride = updatedRide;
-      });
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
-            '¡Viaje iniciado!',
-          ),
-        ),
-      );
-    } on DioException catch (error) {
-      if (!mounted) {
-        return;
-      }
-
-      String message =
-          'No se pudo iniciar el viaje.';
-
-      if (error.response?.statusCode == 400) {
-        message =
-            'El código es incorrecto o '
-            'el GPS no es válido.';
-      } else if (error.response?.statusCode ==
-          409) {
-        message =
-            'El viaje no está en un estado compatible.';
-      } else if (error.response?.statusCode ==
-          410) {
-        message =
-            'El código venció. Solicita uno nuevo.';
-      } else if (error.response?.statusCode ==
-          423) {
-        message =
-            'El código fue bloqueado por '
-            'demasiados intentos.';
-      } else if (error.response == null) {
-        message =
-            'No se pudo conectar con TukiTuki.';
-      }
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(message),
-        ),
-      );
+      // Si falló completar, reanudamos
+      // presencia para poder intentarlo otra vez.
+      _startActivityTimer();
     } finally {
       if (mounted) {
         setState(() {
@@ -432,24 +520,17 @@ class _DriverActiveRideScreenState
   @override
   Widget build(BuildContext context) {
     if (_loading) {
-      return const Scaffold(
-        body: Center(
-          child: CircularProgressIndicator(),
-        ),
-      );
+      return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
 
     final ride = _ride;
-
     final completion = _completion;
 
     if (completion != null) {
       return Scaffold(
         appBar: AppBar(
           automaticallyImplyLeading: false,
-          title: const Text(
-            'Viaje completado',
-          ),
+          title: const Text('Viaje completado'),
         ),
         body: SafeArea(
           child: Padding(
@@ -458,20 +539,14 @@ class _DriverActiveRideScreenState
               mainAxisAlignment: MainAxisAlignment.center,
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                const Icon(
-                  Icons.check_circle,
-                  size: 100,
-                ),
+                const Icon(Icons.check_circle, size: 100),
 
                 const SizedBox(height: 24),
 
                 const Text(
                   '¡Viaje completado!',
                   textAlign: TextAlign.center,
-                  style: TextStyle(
-                    fontSize: 30,
-                    fontWeight: FontWeight.bold,
-                  ),
+                  style: TextStyle(fontSize: 30, fontWeight: FontWeight.bold),
                 ),
 
                 const SizedBox(height: 20),
@@ -479,9 +554,7 @@ class _DriverActiveRideScreenState
                 Text(
                   'Tarifa final',
                   textAlign: TextAlign.center,
-                  style: Theme.of(context)
-                      .textTheme
-                      .titleLarge,
+                  style: Theme.of(context).textTheme.titleLarge,
                 ),
 
                 const SizedBox(height: 8),
@@ -523,19 +596,14 @@ class _DriverActiveRideScreenState
                 FilledButton.icon(
                   onPressed: () {
                     context.go(
-                      '/cash-payment/${completion.rideId}',
+                      '/cash-payment/'
+                      '${completion.rideId}',
                     );
                   },
-                  icon: const Icon(
-                    Icons.payments,
-                  ),
+                  icon: const Icon(Icons.payments),
                   label: const Padding(
-                    padding: EdgeInsets.symmetric(
-                      vertical: 16,
-                    ),
-                    child: Text(
-                      'Cobrar efectivo',
-                    ),
+                    padding: EdgeInsets.symmetric(vertical: 16),
+                    child: Text('Cobrar efectivo'),
                   ),
                 ),
               ],
@@ -547,40 +615,25 @@ class _DriverActiveRideScreenState
 
     if (ride == null) {
       return Scaffold(
-        appBar: AppBar(
-          title: const Text(
-            'Viaje activo',
-          ),
-        ),
-        body: Center(
-          child: Text(
-            _error ??
-                'No tienes un viaje activo.',
-          ),
-        ),
+        appBar: AppBar(title: const Text('Viaje activo')),
+        body: Center(child: Text(_error ?? 'No tienes un viaje activo.')),
       );
     }
 
     return Scaffold(
       appBar: AppBar(
         automaticallyImplyLeading: false,
-        title: const Text(
-          'Tu viaje',
-        ),
+        title: const Text('Tu viaje'),
       ),
       body: SafeArea(
         child: SingleChildScrollView(
           padding: const EdgeInsets.all(24),
           child: Column(
-            crossAxisAlignment:
-                CrossAxisAlignment.stretch,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               const SizedBox(height: 24),
 
-              Icon(
-                _iconForStatus(ride.status),
-                size: 90,
-              ),
+              Icon(_iconForStatus(ride.status), size: 90),
 
               const SizedBox(height: 24),
 
@@ -608,32 +661,21 @@ class _DriverActiveRideScreenState
 
               Card(
                 child: Padding(
-                  padding:
-                      const EdgeInsets.all(16),
+                  padding: const EdgeInsets.all(16),
                   child: Column(
                     children: [
                       ListTile(
-                        leading: const Icon(
-                          Icons.my_location,
-                        ),
-                        title: const Text(
-                          'Recoger en',
-                        ),
-                        subtitle: Text(
-                          ride.originAddress,
-                        ),
+                        leading: const Icon(Icons.my_location),
+                        title: const Text('Recoger en'),
+                        subtitle: Text(ride.originAddress),
                       ),
+
                       const Divider(),
+
                       ListTile(
-                        leading: const Icon(
-                          Icons.location_on,
-                        ),
-                        title: const Text(
-                          'Destino',
-                        ),
-                        subtitle: Text(
-                          ride.destinationAddress,
-                        ),
+                        leading: const Icon(Icons.location_on),
+                        title: const Text('Destino'),
+                        subtitle: Text(ride.destinationAddress),
                       ),
                     ],
                   ),
@@ -642,130 +684,79 @@ class _DriverActiveRideScreenState
 
               const SizedBox(height: 32),
 
-              if (ride.status ==
-                  'DRIVER_ASSIGNED')
+              if (ride.status == 'DRIVER_ASSIGNED')
                 FilledButton.icon(
-                  onPressed: _changingStatus
-                      ? null
-                      : _startArrival,
-                  icon: const Icon(
-                    Icons.two_wheeler,
-                  ),
+                  onPressed: _changingStatus ? null : _startArrival,
+                  icon: const Icon(Icons.two_wheeler),
                   label: const Padding(
-                    padding:
-                        EdgeInsets.symmetric(
-                      vertical: 16,
-                    ),
-                    child: Text(
-                      'Ir a recoger al pasajero',
-                    ),
+                    padding: EdgeInsets.symmetric(vertical: 16),
+                    child: Text('Ir a recoger al pasajero'),
                   ),
                 ),
 
-              if (ride.status ==
-                  'DRIVER_ARRIVING')
+              if (ride.status == 'DRIVER_ARRIVING')
                 FilledButton.icon(
-                  onPressed: _changingStatus
-                      ? null
-                      : _arrive,
-                  icon: const Icon(
-                    Icons.location_on,
-                  ),
+                  onPressed: _changingStatus ? null : _arrive,
+                  icon: const Icon(Icons.location_on),
                   label: const Padding(
-                    padding:
-                        EdgeInsets.symmetric(
-                      vertical: 16,
-                    ),
-                    child: Text(
-                      'Ya llegué',
-                    ),
+                    padding: EdgeInsets.symmetric(vertical: 16),
+                    child: Text('Ya llegué'),
                   ),
                 ),
 
-              if (ride.status ==
-                  'DRIVER_ARRIVED') ...[
+              if (ride.status == 'DRIVER_ARRIVED') ...[
                 Card(
                   child: Padding(
-                    padding:
-                        const EdgeInsets.all(20),
+                    padding: const EdgeInsets.all(20),
                     child: Column(
                       children: [
                         const Text(
                           'Código del pasajero',
                           style: TextStyle(
                             fontSize: 22,
-                            fontWeight:
-                                FontWeight.bold,
+                            fontWeight: FontWeight.bold,
                           ),
                         ),
 
-                        const SizedBox(
-                          height: 8,
-                        ),
+                        const SizedBox(height: 8),
 
                         const Text(
                           'Pídele al pasajero '
                           'su código de 4 dígitos.',
-                          textAlign:
-                              TextAlign.center,
+                          textAlign: TextAlign.center,
                         ),
 
-                        const SizedBox(
-                          height: 20,
-                        ),
+                        const SizedBox(height: 20),
 
                         TextField(
-                          controller:
-                              _codeController,
-                          keyboardType:
-                              TextInputType.number,
-                          textAlign:
-                              TextAlign.center,
+                          controller: _codeController,
+                          keyboardType: TextInputType.number,
+                          textAlign: TextAlign.center,
                           maxLength: 4,
                           inputFormatters: [
-                            FilteringTextInputFormatter
-                                .digitsOnly,
-                            LengthLimitingTextInputFormatter(
-                              4,
-                            ),
+                            FilteringTextInputFormatter.digitsOnly,
+                            LengthLimitingTextInputFormatter(4),
                           ],
-                          style:
-                              const TextStyle(
+                          style: const TextStyle(
                             fontSize: 34,
-                            fontWeight:
-                                FontWeight.bold,
+                            fontWeight: FontWeight.bold,
                             letterSpacing: 12,
                           ),
-                          decoration:
-                              const InputDecoration(
+                          decoration: const InputDecoration(
                             hintText: '0000',
-                            border:
-                                OutlineInputBorder(),
+                            border: OutlineInputBorder(),
                           ),
                         ),
 
-                        const SizedBox(
-                          height: 12,
-                        ),
+                        const SizedBox(height: 12),
 
                         SizedBox(
-                          width:
-                              double.infinity,
-                          child:
-                              FilledButton.icon(
-                            onPressed:
-                                _changingStatus
-                                    ? null
-                                    : _startRide,
-                            icon: const Icon(
-                              Icons.play_arrow,
-                            ),
+                          width: double.infinity,
+                          child: FilledButton.icon(
+                            onPressed: _changingStatus ? null : _startRide,
+                            icon: const Icon(Icons.play_arrow),
                             label: Padding(
-                              padding:
-                                  const EdgeInsets
-                                      .symmetric(
-                                vertical: 16,
-                              ),
+                              padding: const EdgeInsets.symmetric(vertical: 16),
                               child: Text(
                                 _changingStatus
                                     ? 'Validando...'
@@ -786,10 +777,7 @@ class _DriverActiveRideScreenState
                     padding: EdgeInsets.all(24),
                     child: Column(
                       children: [
-                        Icon(
-                          Icons.route,
-                          size: 54,
-                        ),
+                        Icon(Icons.route, size: 54),
                         SizedBox(height: 12),
                         Text(
                           'Viaje en curso',
@@ -800,7 +788,8 @@ class _DriverActiveRideScreenState
                         ),
                         SizedBox(height: 8),
                         Text(
-                          'Dirígete al destino del pasajero.',
+                          'Dirígete al destino '
+                          'del pasajero.',
                           textAlign: TextAlign.center,
                         ),
                       ],
@@ -811,19 +800,15 @@ class _DriverActiveRideScreenState
                 const SizedBox(height: 24),
 
                 FilledButton.icon(
-                  onPressed:
-                      _changingStatus ? null : _completeRide,
-                  icon: const Icon(
-                    Icons.flag,
-                  ),
+                  onPressed: _changingStatus ? null : _completeRide,
+                  icon: const Icon(Icons.flag),
                   label: Padding(
-                    padding: const EdgeInsets.symmetric(
-                      vertical: 16,
-                    ),
+                    padding: const EdgeInsets.symmetric(vertical: 16),
                     child: Text(
                       _changingStatus
                           ? 'Verificando destino...'
-                          : 'Llegué al destino y finalizar viaje',
+                          : 'Llegué al destino y '
+                                'finalizar viaje',
                     ),
                   ),
                 ),
