@@ -4,12 +4,19 @@ import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:go_router/go_router.dart';
 
 import '../data/driver_operations_repository.dart';
 import '../data/driver_rides_repository.dart';
 import '../domain/driver_active_ride.dart';
 import '../domain/driver_ride_completion.dart';
+
+class _DriverLocationFailure implements Exception {
+  const _DriverLocationFailure(this.message);
+
+  final String message;
+}
 
 class DriverActiveRideScreen extends ConsumerStatefulWidget {
   const DriverActiveRideScreen({super.key});
@@ -68,6 +75,72 @@ class _DriverActiveRideScreenState
     });
   }
 
+  Future<Position> _getDriverPosition({required bool requestPermission}) async {
+    final serviceEnabled = await Geolocator.isLocationServiceEnabled();
+
+    if (!serviceEnabled) {
+      throw const _DriverLocationFailure(
+        'Activa la ubicación del dispositivo para continuar.',
+      );
+    }
+
+    var permission = await Geolocator.checkPermission();
+
+    if (permission == LocationPermission.denied && requestPermission) {
+      permission = await Geolocator.requestPermission();
+    }
+
+    if (permission == LocationPermission.denied) {
+      throw const _DriverLocationFailure(
+        'TukiTuki necesita permiso de ubicación para continuar.',
+      );
+    }
+
+    if (permission == LocationPermission.deniedForever) {
+      throw const _DriverLocationFailure(
+        'El permiso de ubicación está bloqueado. Actívalo desde Ajustes.',
+      );
+    }
+
+    try {
+      return await Geolocator.getCurrentPosition(
+        locationSettings: const LocationSettings(
+          accuracy: LocationAccuracy.high,
+          timeLimit: Duration(seconds: 12),
+        ),
+      );
+    } on TimeoutException {
+      throw const _DriverLocationFailure(
+        'No se pudo obtener una ubicación GPS reciente.',
+      );
+    }
+  }
+
+  Future<void> _publishCurrentLocation({
+    required bool requestPermission,
+  }) async {
+    final position = await _getDriverPosition(
+      requestPermission: requestPermission,
+    );
+
+    await ref
+        .read(driverOperationsRepositoryProvider)
+        .updateLocation(
+          latitude: position.latitude,
+          longitude: position.longitude,
+          heading: position.heading,
+          speed: position.speed,
+          accuracy: position.accuracy,
+        );
+
+    debugPrint(
+      'DRIVER ACTIVE LOCATION OK '
+      'lat=${position.latitude.toStringAsFixed(6)} '
+      'lon=${position.longitude.toStringAsFixed(6)} '
+      'accuracy=${position.accuracy}',
+    );
+  }
+
   Future<void> _sendDriverActivity() async {
     if (_activityInFlight || _completion != null) {
       return;
@@ -78,31 +151,18 @@ class _DriverActiveRideScreenState
     try {
       final repository = ref.read(driverOperationsRepositoryProvider);
 
-      final ride = _ride;
-
-      // Mantiene viva la presencia del conductor.
       await repository.heartbeat();
 
-      // IMPORTANTE:
-      //
-      // Mientras todavía estamos recogiendo
-      // al pasajero mantenemos la ubicación
-      // simulada en el origen.
-      //
-      // Cuando el viaje ya está IN_PROGRESS
-      // NO debemos volver a escribir el origen,
-      // porque podría pisar la ubicación final
-      // justo antes de completar el viaje.
-      if (ride == null ||
-          ride.status == 'DRIVER_ASSIGNED' ||
-          ride.status == 'DRIVER_ARRIVING' ||
-          ride.status == 'DRIVER_ARRIVED') {
-        await repository.updateTestLocation();
-      }
+      await _publishCurrentLocation(requestPermission: false);
 
       debugPrint(
         'DRIVER ACTIVE ACTIVITY OK '
-        'status=${ride?.status}',
+        'status=${_ride?.status}',
+      );
+    } on _DriverLocationFailure catch (error) {
+      debugPrint(
+        'DRIVER ACTIVE LOCATION ERROR '
+        '${error.message}',
       );
     } on DioException catch (error) {
       debugPrint(
@@ -256,7 +316,7 @@ class _DriverActiveRideScreenState
 
       await operationsRepository.heartbeat();
 
-      await operationsRepository.updateTestLocation();
+      await _publishCurrentLocation(requestPermission: true);
 
       final updatedRide = await ref
           .read(driverRidesRepositoryProvider)
@@ -269,6 +329,14 @@ class _DriverActiveRideScreenState
       setState(() {
         _ride = updatedRide;
       });
+    } on _DriverLocationFailure catch (error) {
+      if (!mounted) {
+        return;
+      }
+
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(error.message)));
     } on DioException catch (error) {
       if (!mounted) {
         return;
@@ -326,7 +394,7 @@ class _DriverActiveRideScreenState
       // donde comienza el viaje.
       await operationsRepository.heartbeat();
 
-      await operationsRepository.updateTestLocation();
+      await _publishCurrentLocation(requestPermission: true);
 
       final updatedRide = await ref
           .read(driverRidesRepositoryProvider)
@@ -345,6 +413,14 @@ class _DriverActiveRideScreenState
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(const SnackBar(content: Text('¡Viaje iniciado!')));
+    } on _DriverLocationFailure catch (error) {
+      if (!mounted) {
+        return;
+      }
+
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(error.message)));
     } on DioException catch (error) {
       if (!mounted) {
         return;
@@ -413,7 +489,7 @@ class _DriverActiveRideScreenState
 
       // Esta debe ser la ÚLTIMA ubicación enviada
       // antes de llamar /complete.
-      await operationsRepository.updateTestDestinationLocation();
+      await _publishCurrentLocation(requestPermission: true);
 
       debugPrint(
         'DRIVER COMPLETE - '
@@ -438,6 +514,21 @@ class _DriverActiveRideScreenState
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(const SnackBar(content: Text('¡Viaje completado!')));
+    } on _DriverLocationFailure catch (error) {
+      debugPrint(
+        'DRIVER COMPLETE LOCATION ERROR '
+        '${error.message}',
+      );
+
+      if (!mounted) {
+        return;
+      }
+
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(error.message)));
+
+      _startActivityTimer();
     } on DioException catch (error) {
       debugPrint(
         'DRIVER COMPLETE ERROR '

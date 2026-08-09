@@ -46,28 +46,34 @@ class DriverOperationsRepository {
     return _readStatus(response.data);
   }
 
-  Future<void> updateTestLocation() async {
-    await _updateLocation(latitude: -6.4877, longitude: -76.3599);
-  }
-
-  Future<void> updateTestDestinationLocation() async {
-    await _updateLocation(latitude: -6.4685, longitude: -76.3430);
-  }
-
-  Future<void> _updateLocation({
+  Future<void> updateLocation({
     required double latitude,
     required double longitude,
+    double? heading,
+    double? speed,
+    double? accuracy,
   }) async {
-    await _dio.put<Map<String, dynamic>>(
-      'drivers/me/location',
-      data: {
-        'latitude': latitude,
-        'longitude': longitude,
-        'heading': 0.0,
-        'speed': 0.0,
-        'accuracy': 8.0,
-      },
-    );
+    final data = <String, dynamic>{
+      'latitude': latitude,
+      'longitude': longitude,
+    };
+
+    if (heading != null && heading.isFinite && heading >= 0 && heading <= 360) {
+      data['heading'] = heading;
+    }
+
+    if (speed != null && speed.isFinite && speed >= 0) {
+      data['speed'] = speed;
+    }
+
+    if (accuracy != null &&
+        accuracy.isFinite &&
+        accuracy >= 0.1 &&
+        accuracy <= 1000) {
+      data['accuracy'] = accuracy;
+    }
+
+    await _dio.put<Map<String, dynamic>>('drivers/me/location', data: data);
   }
 
   String _readStatus(Map<String, dynamic>? data) {

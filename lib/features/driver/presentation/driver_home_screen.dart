@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../auth/data/auth_repository.dart';
@@ -15,7 +16,8 @@ class DriverHomeScreen extends ConsumerStatefulWidget {
   const DriverHomeScreen({super.key});
 
   @override
-  ConsumerState<DriverHomeScreen> createState() => _DriverHomeScreenState();
+  ConsumerState<DriverHomeScreen> createState() =>
+      _DriverHomeScreenState();
 }
 
 class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
@@ -32,6 +34,9 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
   DriverRideOffer? _offer;
   String? _pendingOfferId;
   String? _pendingProposedFare;
+
+  String? _locationStatusMessage;
+  DateTime? _lastLocationPublishedAt;
 
   Timer? _heartbeatTimer;
   Timer? _offersTimer;
@@ -56,8 +61,12 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed && _online && !_navigatingToRide) {
-      debugPrint('DRIVER APP RESUMED - refrescando presencia');
+    if (state == AppLifecycleState.resumed &&
+        _online &&
+        !_navigatingToRide) {
+      debugPrint(
+        'DRIVER APP RESUMED - refrescando presencia',
+      );
 
       unawaited(_refreshDriverPresence());
       unawaited(_loadOffers());
@@ -68,20 +77,27 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
     bool redirected = false;
 
     try {
-      final ridesRepository = ref.read(driverRidesRepositoryProvider);
+      final ridesRepository =
+          ref.read(driverRidesRepositoryProvider);
 
-      final operationsRepository = ref.read(driverOperationsRepositoryProvider);
+      final operationsRepository =
+          ref.read(driverOperationsRepositoryProvider);
 
-      debugPrint('DRIVER RESTORE - verificando viaje activo...');
+      debugPrint(
+        'DRIVER RESTORE - verificando viaje activo...',
+      );
 
-      final activeRide = await ridesRepository.getActiveRide();
+      final activeRide =
+          await ridesRepository.getActiveRide();
 
       if (!mounted) {
         return;
       }
 
       if (activeRide != null) {
-        debugPrint('DRIVER RESTORE - viaje activo encontrado');
+        debugPrint(
+          'DRIVER RESTORE - viaje activo encontrado',
+        );
 
         redirected = true;
         _goToActiveRide();
@@ -89,18 +105,24 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
         return;
       }
 
-      debugPrint('DRIVER RESTORE - consultando estado operativo...');
+      debugPrint(
+        'DRIVER RESTORE - consultando estado operativo...',
+      );
 
-      final status = await operationsRepository.getStatus();
+      final status =
+          await operationsRepository.getStatus();
 
-      debugPrint('DRIVER RESTORE - status=$status');
+      debugPrint(
+        'DRIVER RESTORE - status=$status',
+      );
 
       if (!mounted) {
         return;
       }
 
       if (status == 'BUSY') {
-        final ride = await ridesRepository.getActiveRide();
+        final ride =
+            await ridesRepository.getActiveRide();
 
         if (!mounted) {
           return;
@@ -114,16 +136,24 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
         }
       }
 
-      final isAvailable = status == 'AVAILABLE';
+      final isAvailable =
+          status == 'AVAILABLE';
 
       setState(() {
         _online = isAvailable;
       });
 
       if (isAvailable) {
-        // Muy importante:
-        // no esperamos al primer Timer.
-        // Refrescamos presencia inmediatamente.
+        /*
+         * Backend conserva AVAILABLE entre aperturas.
+         *
+         * Recuperamos inmediatamente heartbeat +
+         * ubicación real para volver a publicar al
+         * Driver correctamente en Redis GEO.
+         *
+         * No solicitamos nuevamente permiso aquí:
+         * solo comprobamos el permiso existente.
+         */
         await _refreshDriverPresence();
 
         if (!mounted) {
@@ -132,6 +162,8 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
 
         if (_online) {
           _startOnlineWorkers();
+
+          await _loadOffers();
         }
       }
     } on DioException catch (error) {
@@ -142,7 +174,9 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
         'type=${error.type}',
       );
     } catch (error) {
-      debugPrint('DRIVER RESTORE ERROR inesperado: $error');
+      debugPrint(
+        'DRIVER RESTORE ERROR inesperado: $error',
+      );
     } finally {
       if (mounted && !redirected) {
         setState(() {
@@ -159,6 +193,7 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
 
     setState(() {
       _loading = true;
+      _locationStatusMessage = null;
     });
 
     try {
@@ -175,13 +210,38 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
         return;
       }
 
-      final repository = ref.read(driverOperationsRepositoryProvider);
+      /*
+       * Antes de marcar AVAILABLE en Backend,
+       * comprobamos que realmente podamos obtener
+       * una posición.
+       *
+       * Así evitamos:
+       *
+       * AVAILABLE en PostgreSQL
+       * pero sin ubicación en Redis GEO.
+       */
+      final initialPosition =
+          await _getDriverPosition(
+        requestPermission: true,
+      );
 
-      debugPrint('DRIVER ONLINE - conectando...');
+      if (!mounted) {
+        return;
+      }
 
-      final status = await repository.goOnline();
+      final repository =
+          ref.read(driverOperationsRepositoryProvider);
 
-      debugPrint('DRIVER ONLINE - backend status=$status');
+      debugPrint(
+        'DRIVER ONLINE - conectando...',
+      );
+
+      final status =
+          await repository.goOnline();
+
+      debugPrint(
+        'DRIVER ONLINE - backend status=$status',
+      );
 
       if (status == 'BUSY') {
         final ride = await ref
@@ -207,7 +267,9 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
           _online = false;
         });
 
-        _showMessage('El backend no dejó al conductor disponible.');
+        _showMessage(
+          'El backend no dejó al conductor disponible.',
+        );
 
         return;
       }
@@ -220,19 +282,49 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
         _online = true;
       });
 
-      // Inmediatamente después de ONLINE:
-      // heartbeat + GPS.
-      await _refreshDriverPresence();
+      /*
+       * Ya tenemos la ubicación adquirida antes
+       * de llamar ONLINE.
+       *
+       * La reutilizamos para evitar pedir dos
+       * posiciones seguidas al GPS.
+       */
+      await _refreshDriverPresence(
+        knownPosition: initialPosition,
+      );
 
       if (!mounted) {
         return;
       }
 
       if (_online) {
+        /*
+         * Los workers ya NO vuelven a ejecutar
+         * otro refresh inmediatamente.
+         *
+         * Evitamos el doble heartbeat/location
+         * detectado en la auditoría.
+         */
         _startOnlineWorkers();
 
         await _loadOffers();
       }
+    } on _DriverLocationException catch (error) {
+      debugPrint(
+        'DRIVER GPS ERROR - ${error.message}',
+      );
+
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _online = false;
+        _locationStatusMessage =
+            error.message;
+      });
+
+      _showMessage(error.message);
     } on DioException catch (error) {
       debugPrint(
         'DRIVER ONLINE ERROR '
@@ -267,17 +359,33 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
         }
       }
 
-      String message = 'No se pudo conectar como conductor.';
+      String message =
+          'No se pudo conectar como conductor.';
 
       if (error.response?.statusCode == 400) {
-        message = 'No se pudo cambiar el estado del conductor.';
+        message =
+            'No se pudo cambiar el estado del conductor.';
       } else if (error.response?.statusCode == 403) {
-        message = 'El conductor todavía no está aprobado.';
+        message =
+            'El conductor todavía no está aprobado.';
       } else if (error.response == null) {
-        message = 'No se pudo conectar con TukiTuki.';
+        message =
+            'No se pudo conectar con TukiTuki.';
       }
 
       _showMessage(message);
+    } catch (error) {
+      debugPrint(
+        'DRIVER ONLINE ERROR inesperado: $error',
+      );
+
+      if (!mounted) {
+        return;
+      }
+
+      _showMessage(
+        'No se pudo completar la conexión del conductor.',
+      );
     } finally {
       if (mounted) {
         setState(() {
@@ -287,6 +395,116 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
     }
   }
 
+  Future<Position> _getDriverPosition({
+    required bool requestPermission,
+  }) async {
+    try {
+      final serviceEnabled =
+          await Geolocator.isLocationServiceEnabled();
+
+      if (!serviceEnabled) {
+        throw const _DriverLocationException(
+          'Activa la ubicación del dispositivo '
+          'para conectarte como conductor.',
+        );
+      }
+
+      var permission =
+          await Geolocator.checkPermission();
+
+      if (permission ==
+              LocationPermission.denied &&
+          requestPermission) {
+        permission =
+            await Geolocator.requestPermission();
+      }
+
+      if (permission ==
+          LocationPermission.denied) {
+        throw const _DriverLocationException(
+          'TukiTuki necesita permiso de ubicación '
+          'para publicar tu posición y recibir viajes.',
+        );
+      }
+
+      if (permission ==
+          LocationPermission.deniedForever) {
+        throw const _DriverLocationException(
+          'El permiso de ubicación está bloqueado. '
+          'Actívalo desde Ajustes del dispositivo.',
+        );
+      }
+
+      if (permission !=
+              LocationPermission.whileInUse &&
+          permission !=
+              LocationPermission.always) {
+        throw const _DriverLocationException(
+          'No fue posible obtener permiso de ubicación.',
+        );
+      }
+
+      try {
+        return await Geolocator.getCurrentPosition(
+          locationSettings:
+              const LocationSettings(
+            accuracy: LocationAccuracy.high,
+          ),
+        ).timeout(
+          const Duration(seconds: 12),
+        );
+      } on TimeoutException {
+        throw const _DriverLocationException(
+          'El GPS está tardando demasiado '
+          'en obtener tu ubicación. '
+          'Intenta nuevamente.',
+        );
+      }
+    } on _DriverLocationException {
+      rethrow;
+    } catch (error) {
+      debugPrint(
+        'DRIVER GPS - error obteniendo posición: $error',
+      );
+
+      throw const _DriverLocationException(
+        'No se pudo obtener tu ubicación GPS.',
+      );
+    }
+  }
+
+  Future<void> _publishDriverLocation(
+    DriverOperationsRepository repository,
+    Position position,
+  ) async {
+    await repository.updateLocation(
+      latitude: position.latitude,
+      longitude: position.longitude,
+      heading: position.heading,
+      speed: position.speed,
+      accuracy: position.accuracy,
+    );
+
+    debugPrint(
+      'DRIVER LOCATION OK '
+      'lat=${position.latitude.toStringAsFixed(6)} '
+      'lon=${position.longitude.toStringAsFixed(6)} '
+      'accuracy=${position.accuracy.toStringAsFixed(1)} '
+      'speed=${position.speed.toStringAsFixed(1)} '
+      'heading=${position.heading.toStringAsFixed(1)}',
+    );
+
+    if (!mounted) {
+      return;
+    }
+
+    setState(() {
+      _locationStatusMessage = null;
+      _lastLocationPublishedAt =
+          DateTime.now();
+    });
+  }
+
   void _startOnlineWorkers() {
     _stopOnlineWorkers();
 
@@ -294,22 +512,35 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
       return;
     }
 
-    debugPrint('DRIVER WORKERS - iniciados');
+    debugPrint(
+      'DRIVER WORKERS - iniciados',
+    );
 
-    // Lo ejecutamos ya, sin esperar al Timer.
-    unawaited(_refreshDriverPresence());
-    unawaited(_loadOffers());
+    /*
+     * Ya hicimos presencia y ofertas antes
+     * de entrar aquí.
+     *
+     * Por eso NO ejecutamos nuevamente
+     * heartbeat/location de inmediato.
+     */
 
-    // En staging usamos 10 segundos
-    // para mantener lastSeenAt fresco.
-    _heartbeatTimer = Timer.periodic(const Duration(seconds: 10), (_) {
-      unawaited(_refreshDriverPresence());
-    });
+    _heartbeatTimer = Timer.periodic(
+      const Duration(seconds: 10),
+      (_) {
+        unawaited(
+          _refreshDriverPresence(),
+        );
+      },
+    );
 
-    // Revisamos ofertas cada 3 segundos.
-    _offersTimer = Timer.periodic(const Duration(seconds: 3), (_) {
-      unawaited(_loadOffers());
-    });
+    _offersTimer = Timer.periodic(
+      const Duration(seconds: 3),
+      (_) {
+        unawaited(
+          _loadOffers(),
+        );
+      },
+    );
   }
 
   void _stopOnlineWorkers() {
@@ -320,32 +551,103 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
     _offersTimer = null;
   }
 
-  Future<void> _refreshDriverPresence() async {
-    if (!_online || _refreshingPresence || _navigatingToRide) {
-      return;
+  Future<bool> _refreshDriverPresence({
+    Position? knownPosition,
+  }) async {
+    if (!_online ||
+        _refreshingPresence ||
+        _navigatingToRide) {
+      return false;
     }
 
     _refreshingPresence = true;
 
     try {
-      final repository = ref.read(driverOperationsRepositoryProvider);
+      final repository =
+          ref.read(driverOperationsRepositoryProvider);
 
-      // Heartbeat primero:
-      // el backend confirma que seguimos online.
-      final heartbeatStatus = await repository.heartbeat();
+      /*
+       * Heartbeat primero.
+       *
+       * Backend confirma que seguimos en un
+       * estado operativo válido.
+       */
+      final heartbeatStatus =
+          await repository.heartbeat();
 
       debugPrint(
         'DRIVER HEARTBEAT OK '
         'status=$heartbeatStatus',
       );
 
-      // Luego refrescamos la ubicación.
-      await repository.updateTestLocation();
+      if (heartbeatStatus == 'BUSY') {
+        final activeRide = await ref
+            .read(driverRidesRepositoryProvider)
+            .getActiveRide();
 
-      debugPrint(
-        'DRIVER LOCATION OK '
-        'lat=-6.4877 lon=-76.3599',
+        if (!mounted) {
+          return false;
+        }
+
+        if (activeRide != null) {
+          debugPrint(
+            'DRIVER HEARTBEAT - '
+            'viaje activo detectado',
+          );
+
+          _goToActiveRide();
+          return false;
+        }
+      }
+
+      if (heartbeatStatus != 'AVAILABLE') {
+        await _reconcileOperationalStatus();
+
+        return false;
+      }
+
+      /*
+       * Durante los ticks periódicos NO volvemos
+       * a pedir permiso al usuario.
+       *
+       * Solo comprobamos el permiso existente.
+       */
+      final position =
+          knownPosition ??
+          await _getDriverPosition(
+            requestPermission: false,
+          );
+
+      await _publishDriverLocation(
+        repository,
+        position,
       );
+
+      return true;
+    } on _DriverLocationException catch (error) {
+      debugPrint(
+        'DRIVER PRESENCE GPS ERROR - '
+        '${error.message}',
+      );
+
+      if (mounted) {
+        setState(() {
+          _locationStatusMessage =
+              '${error.message} '
+              'Tu ubicación no puede actualizarse '
+              'hasta resolverlo.';
+        });
+      }
+
+      /*
+       * No pedimos permiso repetidamente ni
+       * mostramos SnackBar cada 10 segundos.
+       *
+       * El worker seguirá intentando y recuperará
+       * automáticamente la publicación si vuelve
+       * el GPS.
+       */
+      return false;
     } on DioException catch (error) {
       debugPrint(
         'DRIVER PRESENCE ERROR '
@@ -355,73 +657,95 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
         'message=${error.message}',
       );
 
-      // Swagger indica que heartbeat 400 significa
-      // que el conductor está desconectado.
       if (error.response?.statusCode == 400) {
-        try {
-          final actualStatus = await ref
-              .read(driverOperationsRepositoryProvider)
-              .getStatus();
-
-          debugPrint(
-            'DRIVER PRESENCE - '
-            'status real=$actualStatus',
-          );
-
-          if (!mounted) {
-            return;
-          }
-
-          if (actualStatus == 'BUSY') {
-            final activeRide = await ref
-                .read(driverRidesRepositoryProvider)
-                .getActiveRide();
-
-            if (!mounted) {
-              return;
-            }
-
-            if (activeRide != null) {
-              debugPrint(
-                'DRIVER PRESENCE - '
-                'conductor seleccionado por pasajero',
-              );
-
-              _goToActiveRide();
-              return;
-            }
-          }
-
-          if (actualStatus != 'AVAILABLE') {
-            _stopOnlineWorkers();
-
-            setState(() {
-              _online = false;
-              _offer = null;
-            });
-
-            _showMessage(
-              'El conductor dejó de estar disponible. '
-              'Pulsa Conectarme nuevamente.',
-            );
-          }
-        } catch (statusError) {
-          debugPrint(
-            'DRIVER PRESENCE - '
-            'no se pudo consultar status: '
-            '$statusError',
-          );
+        await _reconcileOperationalStatus();
+      } else if (error.response?.statusCode ==
+          503) {
+        if (mounted) {
+          setState(() {
+            _locationStatusMessage =
+                'La ubicación no pudo publicarse '
+                'para recibir viajes. '
+                'TukiTuki volverá a intentarlo.';
+          });
         }
       }
+
+      return false;
     } catch (error) {
-      debugPrint('DRIVER PRESENCE ERROR inesperado: $error');
+      debugPrint(
+        'DRIVER PRESENCE ERROR inesperado: $error',
+      );
+
+      return false;
     } finally {
       _refreshingPresence = false;
     }
   }
 
+  Future<void> _reconcileOperationalStatus() async {
+    try {
+      final actualStatus = await ref
+          .read(driverOperationsRepositoryProvider)
+          .getStatus();
+
+      debugPrint(
+        'DRIVER PRESENCE - '
+        'status real=$actualStatus',
+      );
+
+      if (!mounted) {
+        return;
+      }
+
+      if (actualStatus == 'BUSY') {
+        final activeRide = await ref
+            .read(driverRidesRepositoryProvider)
+            .getActiveRide();
+
+        if (!mounted) {
+          return;
+        }
+
+        if (activeRide != null) {
+          debugPrint(
+            'DRIVER PRESENCE - '
+            'conductor seleccionado por pasajero',
+          );
+
+          _goToActiveRide();
+
+          return;
+        }
+      }
+
+      if (actualStatus != 'AVAILABLE') {
+        _stopOnlineWorkers();
+
+        setState(() {
+          _online = false;
+          _offer = null;
+        });
+
+        _showMessage(
+          'El conductor dejó de estar disponible. '
+          'Pulsa Conectarme nuevamente.',
+        );
+      }
+    } catch (statusError) {
+      debugPrint(
+        'DRIVER PRESENCE - '
+        'no se pudo consultar status: '
+        '$statusError',
+      );
+    }
+  }
+
   Future<void> _loadOffers() async {
-    if (!_online || _accepting || _loadingOffers || _navigatingToRide) {
+    if (!_online ||
+        _accepting ||
+        _loadingOffers ||
+        _navigatingToRide) {
       return;
     }
 
@@ -437,13 +761,16 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
       }
 
       if (activeRide != null) {
-        debugPrint('DRIVER OFFERS - viaje activo detectado');
+        debugPrint(
+          'DRIVER OFFERS - viaje activo detectado',
+        );
 
         _goToActiveRide();
         return;
       }
 
-      final pendingOfferId = _pendingOfferId;
+      final pendingOfferId =
+          _pendingOfferId;
 
       if (pendingOfferId != null) {
         try {
@@ -464,7 +791,8 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
             setState(() {
               _offer = null;
               _pendingProposedFare =
-                  pending.proposedFare ?? _pendingProposedFare;
+                  pending.proposedFare ??
+                  _pendingProposedFare;
             });
 
             return;
@@ -505,7 +833,9 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
             'status=${error.response?.statusCode}',
           );
 
-          if (error.response?.statusCode == 404 && mounted) {
+          if (error.response?.statusCode ==
+                  404 &&
+              mounted) {
             setState(() {
               _pendingOfferId = null;
               _pendingProposedFare = null;
@@ -520,7 +850,10 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
           .read(driverOffersRepositoryProvider)
           .getActiveOffers();
 
-      debugPrint('DRIVER OFFERS OK - cantidad=${offers.length}');
+      debugPrint(
+        'DRIVER OFFERS OK - '
+        'cantidad=${offers.length}',
+      );
 
       if (offers.isNotEmpty) {
         final first = offers.first;
@@ -533,12 +866,16 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
         );
       }
 
-      if (!mounted || _navigatingToRide) {
+      if (!mounted ||
+          _navigatingToRide) {
         return;
       }
 
       setState(() {
-        _offer = offers.isEmpty ? null : offers.first;
+        _offer =
+            offers.isEmpty
+                ? null
+                : offers.first;
       });
     } on DioException catch (error) {
       debugPrint(
@@ -549,7 +886,9 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
         'message=${error.message}',
       );
     } catch (error) {
-      debugPrint('DRIVER OFFERS ERROR inesperado: $error');
+      debugPrint(
+        'DRIVER OFFERS ERROR inesperado: $error',
+      );
     } finally {
       _loadingOffers = false;
     }
@@ -558,7 +897,9 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
   Future<void> _acceptOffer() async {
     final offer = _offer;
 
-    if (offer == null || _accepting || _navigatingToRide) {
+    if (offer == null ||
+        _accepting ||
+        _navigatingToRide) {
       return;
     }
 
@@ -567,7 +908,9 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
     });
 
     try {
-      debugPrint('DRIVER OFFER PROPOSAL - enviando...');
+      debugPrint(
+        'DRIVER OFFER PROPOSAL - enviando...',
+      );
 
       final proposed = await ref
           .read(driverOffersRepositoryProvider)
@@ -586,10 +929,13 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
         _offer = null;
         _pendingOfferId = proposed.id;
         _pendingProposedFare =
-            proposed.proposedFare ?? offer.passengerOfferFare;
+            proposed.proposedFare ??
+            offer.passengerOfferFare;
       });
 
-      _showMessage('Propuesta enviada al pasajero.');
+      _showMessage(
+        'Propuesta enviada al pasajero.',
+      );
     } on DioException catch (error) {
       debugPrint(
         'DRIVER OFFER ACCEPT ERROR '
@@ -601,21 +947,27 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
         return;
       }
 
-      String message = 'No se pudo enviar la propuesta.';
+      String message =
+          'No se pudo enviar la propuesta.';
 
       if (error.response?.statusCode == 409) {
-        message = 'La oferta ya venció o fue asignada.';
-      } else if (error.response?.statusCode == 404) {
-        message = 'La oferta ya no está disponible.';
+        message =
+            'La oferta ya venció o fue asignada.';
+      } else if (error.response?.statusCode ==
+          404) {
+        message =
+            'La oferta ya no está disponible.';
       } else if (error.response == null) {
-        message = 'No se pudo conectar con TukiTuki.';
+        message =
+            'No se pudo conectar con TukiTuki.';
       }
 
       _showMessage(message);
 
       await _loadOffers();
     } finally {
-      if (mounted && !_navigatingToRide) {
+      if (mounted &&
+          !_navigatingToRide) {
         setState(() {
           _accepting = false;
         });
@@ -626,39 +978,62 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
   Future<void> _counterOffer() async {
     final offer = _offer;
 
-    if (offer == null || _accepting || _navigatingToRide) {
+    if (offer == null ||
+        _accepting ||
+        _navigatingToRide) {
       return;
     }
 
-    final controller = TextEditingController();
+    final controller =
+        TextEditingController();
+
     String? validationError;
 
-    final proposedFare = await showDialog<String>(
+    final proposedFare =
+        await showDialog<String>(
       context: context,
       builder: (dialogContext) {
         return StatefulBuilder(
-          builder: (context, setDialogState) {
+          builder: (
+            context,
+            setDialogState,
+          ) {
             return AlertDialog(
-              title: const Text('Hacer contraoferta'),
+              title:
+                  const Text(
+                'Hacer contraoferta',
+              ),
               content: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize:
+                    MainAxisSize.min,
+                crossAxisAlignment:
+                    CrossAxisAlignment.start,
                 children: [
                   Text(
                     'El pasajero ofrece '
                     'S/ ${offer.passengerOfferFare}',
                   ),
-                  const SizedBox(height: 16),
+                  const SizedBox(
+                    height: 16,
+                  ),
                   TextField(
-                    controller: controller,
-                    autofocus: true,
-                    keyboardType: const TextInputType.numberWithOptions(
+                    controller:
+                        controller,
+                    autofocus:
+                        true,
+                    keyboardType:
+                        const TextInputType
+                            .numberWithOptions(
                       decimal: true,
                     ),
-                    decoration: InputDecoration(
-                      labelText: 'Tu contraoferta',
-                      prefixText: 'S/ ',
-                      errorText: validationError,
+                    decoration:
+                        InputDecoration(
+                      labelText:
+                          'Tu contraoferta',
+                      prefixText:
+                          'S/ ',
+                      errorText:
+                          validationError,
                     ),
                   ),
                 ],
@@ -666,57 +1041,97 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
               actions: [
                 TextButton(
                   onPressed: () {
-                    Navigator.of(dialogContext).pop();
+                    Navigator.of(
+                      dialogContext,
+                    ).pop();
                   },
-                  child: const Text('Cancelar'),
+                  child:
+                      const Text(
+                    'Cancelar',
+                  ),
                 ),
                 FilledButton(
                   onPressed: () {
-                    final raw = controller.text.trim().replaceAll(',', '.');
+                    final raw = controller
+                        .text
+                        .trim()
+                        .replaceAll(
+                          ',',
+                          '.',
+                        );
 
-                    final value = double.tryParse(raw);
-
-                    final passengerValue = double.tryParse(
-                      offer.passengerOfferFare,
+                    final value =
+                        double.tryParse(
+                      raw,
                     );
 
-                    if (value == null || value <= 0) {
+                    final passengerValue =
+                        double.tryParse(
+                      offer
+                          .passengerOfferFare,
+                    );
+
+                    if (value == null ||
+                        value <= 0) {
                       setDialogState(() {
-                        validationError = 'Ingresa un monto válido.';
+                        validationError =
+                            'Ingresa un monto válido.';
                       });
+
                       return;
                     }
 
-                    final parts = raw.split('.');
+                    final parts =
+                        raw.split('.');
 
                     if (parts.length > 2 ||
-                        (parts.length == 2 && parts[1].length > 2)) {
+                        (parts.length == 2 &&
+                            parts[1].length >
+                                2)) {
                       setDialogState(() {
-                        validationError = 'Usa como máximo 2 decimales.';
+                        validationError =
+                            'Usa como máximo 2 decimales.';
                       });
+
                       return;
                     }
 
-                    if (passengerValue != null && value <= passengerValue) {
+                    if (passengerValue !=
+                            null &&
+                        value <=
+                            passengerValue) {
                       setDialogState(() {
                         validationError =
                             'La contraoferta debe ser '
                             'mayor que S/ '
                             '${offer.passengerOfferFare}.';
                       });
+
                       return;
                     }
 
                     if (value > 9999.99) {
                       setDialogState(() {
-                        validationError = 'El monto es demasiado alto.';
+                        validationError =
+                            'El monto es demasiado alto.';
                       });
+
                       return;
                     }
 
-                    Navigator.of(dialogContext).pop(value.toStringAsFixed(2));
+                    Navigator.of(
+                      dialogContext,
+                    ).pop(
+                      value
+                          .toStringAsFixed(
+                        2,
+                      ),
+                    );
                   },
-                  child: const Text('Enviar'),
+                  child:
+                      const Text(
+                    'Enviar',
+                  ),
                 ),
               ],
             );
@@ -727,7 +1142,8 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
 
     controller.dispose();
 
-    if (proposedFare == null || !mounted) {
+    if (proposedFare == null ||
+        !mounted) {
       return;
     }
 
@@ -743,7 +1159,10 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
 
       final proposed = await ref
           .read(driverOffersRepositoryProvider)
-          .counterOffer(offer.id, proposedFare);
+          .counterOffer(
+            offer.id,
+            proposedFare,
+          );
 
       debugPrint(
         'DRIVER COUNTER OFFER OK '
@@ -758,10 +1177,14 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
       setState(() {
         _offer = null;
         _pendingOfferId = proposed.id;
-        _pendingProposedFare = proposed.proposedFare ?? proposedFare;
+        _pendingProposedFare =
+            proposed.proposedFare ??
+            proposedFare;
       });
 
-      _showMessage('Contraoferta enviada al pasajero.');
+      _showMessage(
+        'Contraoferta enviada al pasajero.',
+      );
     } on DioException catch (error) {
       debugPrint(
         'DRIVER COUNTER OFFER ERROR '
@@ -773,27 +1196,33 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
         return;
       }
 
-      String message = 'No se pudo enviar la contraoferta.';
+      String message =
+          'No se pudo enviar la contraoferta.';
 
       if (error.response?.statusCode == 400) {
         message =
             'El monto de la contraoferta '
             'no es válido.';
-      } else if (error.response?.statusCode == 409) {
+      } else if (error.response?.statusCode ==
+          409) {
         message =
             'La oferta ya venció o '
             'dejó de estar disponible.';
-      } else if (error.response?.statusCode == 404) {
-        message = 'La oferta ya no está disponible.';
+      } else if (error.response?.statusCode ==
+          404) {
+        message =
+            'La oferta ya no está disponible.';
       } else if (error.response == null) {
-        message = 'No se pudo conectar con TukiTuki.';
+        message =
+            'No se pudo conectar con TukiTuki.';
       }
 
       _showMessage(message);
 
       await _loadOffers();
     } finally {
-      if (mounted && !_navigatingToRide) {
+      if (mounted &&
+          !_navigatingToRide) {
         setState(() {
           _accepting = false;
         });
@@ -804,7 +1233,9 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
   Future<void> _rejectOffer() async {
     final offer = _offer;
 
-    if (offer == null || _accepting || _navigatingToRide) {
+    if (offer == null ||
+        _accepting ||
+        _navigatingToRide) {
       return;
     }
 
@@ -813,7 +1244,9 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
     });
 
     try {
-      await ref.read(driverOffersRepositoryProvider).rejectOffer(offer.id);
+      await ref
+          .read(driverOffersRepositoryProvider)
+          .rejectOffer(offer.id);
 
       if (!mounted) {
         return;
@@ -823,7 +1256,9 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
         _offer = null;
       });
 
-      _showMessage('Solicitud rechazada.');
+      _showMessage(
+        'Solicitud rechazada.',
+      );
 
       await _loadOffers();
     } on DioException catch (error) {
@@ -837,19 +1272,25 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
         return;
       }
 
-      String message = 'No se pudo rechazar la solicitud.';
+      String message =
+          'No se pudo rechazar la solicitud.';
 
       if (error.response?.statusCode == 409) {
-        message = 'La solicitud ya venció o dejó de estar disponible.';
-      } else if (error.response?.statusCode == 404) {
-        message = 'La solicitud ya no está disponible.';
+        message =
+            'La solicitud ya venció o dejó de estar disponible.';
+      } else if (error.response?.statusCode ==
+          404) {
+        message =
+            'La solicitud ya no está disponible.';
       } else if (error.response == null) {
-        message = 'No se pudo conectar con TukiTuki.';
+        message =
+            'No se pudo conectar con TukiTuki.';
       }
 
       _showMessage(message);
     } finally {
-      if (mounted && !_navigatingToRide) {
+      if (mounted &&
+          !_navigatingToRide) {
         setState(() {
           _accepting = false;
         });
@@ -858,7 +1299,8 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
   }
 
   Future<void> _goOffline() async {
-    if (_loading || _navigatingToRide) {
+    if (_loading ||
+        _navigatingToRide) {
       return;
     }
 
@@ -884,7 +1326,17 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
           .read(driverOperationsRepositoryProvider)
           .goOffline();
 
-      debugPrint('DRIVER OFFLINE OK status=$status');
+      debugPrint(
+        'DRIVER OFFLINE OK status=$status',
+      );
+
+      if (status != 'OFFLINE') {
+        _showMessage(
+          'El backend no confirmó la desconexión.',
+        );
+
+        return;
+      }
 
       _stopOnlineWorkers();
 
@@ -897,6 +1349,8 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
         _offer = null;
         _pendingOfferId = null;
         _pendingProposedFare = null;
+        _locationStatusMessage = null;
+        _lastLocationPublishedAt = null;
       });
     } on DioException catch (error) {
       debugPrint(
@@ -932,9 +1386,12 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
         }
       }
 
-      _showMessage('No se pudo desconectar al conductor.');
+      _showMessage(
+        'No se pudo desconectar al conductor.',
+      );
     } finally {
-      if (mounted && !_navigatingToRide) {
+      if (mounted &&
+          !_navigatingToRide) {
         setState(() {
           _loading = false;
         });
@@ -947,7 +1404,9 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
 
     if (_online) {
       try {
-        await ref.read(driverOperationsRepositoryProvider).goOffline();
+        await ref
+            .read(driverOperationsRepositoryProvider)
+            .goOffline();
       } catch (error) {
         debugPrint(
           'DRIVER LOGOUT - '
@@ -956,7 +1415,9 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
       }
     }
 
-    await ref.read(authRepositoryProvider).logout();
+    await ref
+        .read(authRepositoryProvider)
+        .logout();
 
     if (!mounted) {
       return;
@@ -966,7 +1427,8 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
   }
 
   void _goToActiveRide() {
-    if (!mounted || _navigatingToRide) {
+    if (!mounted ||
+        _navigatingToRide) {
       return;
     }
 
@@ -982,9 +1444,12 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
       return;
     }
 
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(SnackBar(content: Text(message)));
+    ScaffoldMessenger.of(context)
+        .showSnackBar(
+      SnackBar(
+        content: Text(message),
+      ),
+    );
   }
 
   @override
@@ -994,13 +1459,17 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
         body: SafeArea(
           child: Center(
             child: Column(
-              mainAxisSize: MainAxisSize.min,
+              mainAxisSize:
+                  MainAxisSize.min,
               children: [
                 CircularProgressIndicator(),
                 SizedBox(height: 20),
                 Text(
                   'Recuperando tu estado...',
-                  style: TextStyle(fontSize: 18),
+                  style:
+                      TextStyle(
+                    fontSize: 18,
+                  ),
                 ),
               ],
             ),
@@ -1011,244 +1480,483 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('TukiTuki Conductor'),
+        title:
+            const Text(
+          'TukiTuki Conductor',
+        ),
         actions: [
-          IconButton(onPressed: _logout, icon: const Icon(Icons.logout)),
+          IconButton(
+            onPressed:
+                _logout,
+            icon:
+                const Icon(
+              Icons.logout,
+            ),
+          ),
         ],
       ),
       body: SafeArea(
         child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: _offer != null ? _buildOffer(_offer!) : _buildStatus(),
+          padding:
+              const EdgeInsets.all(
+            24,
+          ),
+          child: _offer != null
+              ? _buildOffer(_offer!)
+              : _buildStatus(),
         ),
       ),
     );
   }
 
   Widget _buildStatus() {
-    if (_online && _pendingOfferId != null) {
+    if (_online &&
+        _pendingOfferId != null) {
       return Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Icon(Icons.hourglass_top, size: 90),
-            const SizedBox(height: 24),
-            const Text(
-              'Propuesta enviada',
-              textAlign: TextAlign.center,
-              style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold),
-            ),
-            const SizedBox(height: 12),
-            if (_pendingProposedFare != null)
-              Text(
-                'S/ $_pendingProposedFare',
-                style: const TextStyle(
-                  fontSize: 32,
-                  fontWeight: FontWeight.bold,
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize:
+                MainAxisSize.min,
+            children: [
+              const Icon(
+                Icons.hourglass_top,
+                size: 90,
+              ),
+              const SizedBox(
+                height: 24,
+              ),
+              const Text(
+                'Propuesta enviada',
+                textAlign:
+                    TextAlign.center,
+                style:
+                    TextStyle(
+                  fontSize: 28,
+                  fontWeight:
+                      FontWeight.bold,
                 ),
               ),
-            const SizedBox(height: 16),
-            const Text(
-              'Esperando que el pasajero '
-              'elija a su conductor.',
-              textAlign: TextAlign.center,
-            ),
-            const SizedBox(height: 8),
-            const Text(
-              'Sigues disponible mientras '
-              'esperas la respuesta.',
-              textAlign: TextAlign.center,
-            ),
-          ],
+              const SizedBox(
+                height: 12,
+              ),
+              if (_pendingProposedFare !=
+                  null)
+                Text(
+                  'S/ $_pendingProposedFare',
+                  style:
+                      const TextStyle(
+                    fontSize: 32,
+                    fontWeight:
+                        FontWeight.bold,
+                  ),
+                ),
+              const SizedBox(
+                height: 16,
+              ),
+              const Text(
+                'Esperando que el pasajero '
+                'elija a su conductor.',
+                textAlign:
+                    TextAlign.center,
+              ),
+              const SizedBox(
+                height: 8,
+              ),
+              const Text(
+                'Sigues disponible mientras '
+                'esperas la respuesta.',
+                textAlign:
+                    TextAlign.center,
+              ),
+              if (_locationStatusMessage !=
+                  null) ...[
+                const SizedBox(
+                  height: 20,
+                ),
+                _buildLocationWarning(),
+              ],
+            ],
+          ),
         ),
       );
     }
+
     return Center(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(
-            _online ? Icons.check_circle : Icons.offline_bolt_outlined,
-            size: 90,
-          ),
-
-          const SizedBox(height: 24),
-
-          Text(
-            _online ? 'Estás disponible' : 'Estás desconectado',
-            textAlign: TextAlign.center,
-            style: const TextStyle(fontSize: 28, fontWeight: FontWeight.bold),
-          ),
-
-          const SizedBox(height: 12),
-
-          Text(
-            _online
-                ? 'Esperando solicitudes de viaje'
-                : 'Conéctate para recibir viajes',
-            textAlign: TextAlign.center,
-          ),
-
-          const SizedBox(height: 32),
-
-          SizedBox(
-            width: double.infinity,
-            child: FilledButton(
-              onPressed: _loading
-                  ? null
-                  : _online
-                  ? _goOffline
-                  : _goOnline,
-              child: Padding(
-                padding: const EdgeInsets.symmetric(vertical: 16),
-                child: _loading
-                    ? const SizedBox(
-                        width: 22,
-                        height: 22,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : Text(_online ? 'Desconectarme' : 'Conectarme'),
+      child: SingleChildScrollView(
+        child: Column(
+          mainAxisSize:
+              MainAxisSize.min,
+          children: [
+            Icon(
+              _online
+                  ? Icons.check_circle
+                  : Icons.offline_bolt_outlined,
+              size: 90,
+            ),
+            const SizedBox(
+              height: 24,
+            ),
+            Text(
+              _online
+                  ? 'Estás disponible'
+                  : 'Estás desconectado',
+              textAlign:
+                  TextAlign.center,
+              style:
+                  const TextStyle(
+                fontSize: 28,
+                fontWeight:
+                    FontWeight.bold,
               ),
             ),
-          ),
-        ],
+            const SizedBox(
+              height: 12,
+            ),
+            Text(
+              _online
+                  ? 'Esperando solicitudes de viaje'
+                  : 'Conéctate para recibir viajes',
+              textAlign:
+                  TextAlign.center,
+            ),
+            if (_online &&
+                _lastLocationPublishedAt !=
+                    null &&
+                _locationStatusMessage ==
+                    null) ...[
+              const SizedBox(
+                height: 12,
+              ),
+              const Row(
+                mainAxisAlignment:
+                    MainAxisAlignment.center,
+                children: [
+                  Icon(
+                    Icons.location_on,
+                    size: 18,
+                  ),
+                  SizedBox(width: 6),
+                  Text(
+                    'Ubicación GPS activa',
+                  ),
+                ],
+              ),
+            ],
+            if (_locationStatusMessage !=
+                null) ...[
+              const SizedBox(
+                height: 20,
+              ),
+              _buildLocationWarning(),
+            ],
+            const SizedBox(
+              height: 32,
+            ),
+            SizedBox(
+              width:
+                  double.infinity,
+              child:
+                  FilledButton(
+                onPressed:
+                    _loading
+                        ? null
+                        : _online
+                            ? _goOffline
+                            : _goOnline,
+                child:
+                    Padding(
+                  padding:
+                      const EdgeInsets.symmetric(
+                    vertical: 16,
+                  ),
+                  child:
+                      _loading
+                          ? const SizedBox(
+                              width: 22,
+                              height: 22,
+                              child:
+                                  CircularProgressIndicator(
+                                strokeWidth:
+                                    2,
+                              ),
+                            )
+                          : Text(
+                              _online
+                                  ? 'Desconectarme'
+                                  : 'Conectarme',
+                            ),
+                ),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
 
-  Widget _buildOffer(DriverRideOffer offer) {
+  Widget _buildLocationWarning() {
+    return Card(
+      child: Padding(
+        padding:
+            const EdgeInsets.all(
+          16,
+        ),
+        child: Row(
+          crossAxisAlignment:
+              CrossAxisAlignment.start,
+          children: [
+            const Icon(
+              Icons.location_off,
+            ),
+            const SizedBox(
+              width: 12,
+            ),
+            Expanded(
+              child: Text(
+                _locationStatusMessage ??
+                    'La ubicación no está disponible.',
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildOffer(
+    DriverRideOffer offer,
+  ) {
     return SingleChildScrollView(
       child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
+        crossAxisAlignment:
+            CrossAxisAlignment.stretch,
         children: [
-          const SizedBox(height: 20),
-
-          const Icon(Icons.notifications_active, size: 72),
-
-          const SizedBox(height: 16),
-
+          const SizedBox(
+            height: 20,
+          ),
+          const Icon(
+            Icons.notifications_active,
+            size: 72,
+          ),
+          const SizedBox(
+            height: 16,
+          ),
           const Text(
             '¡Nuevo viaje!',
-            textAlign: TextAlign.center,
-            style: TextStyle(fontSize: 30, fontWeight: FontWeight.bold),
+            textAlign:
+                TextAlign.center,
+            style:
+                TextStyle(
+              fontSize: 30,
+              fontWeight:
+                  FontWeight.bold,
+            ),
           ),
-
-          const SizedBox(height: 8),
-
+          const SizedBox(
+            height: 8,
+          ),
           const Text(
             'Precio recomendado TukiTuki',
-            textAlign: TextAlign.center,
+            textAlign:
+                TextAlign.center,
           ),
-
-          const SizedBox(height: 6),
-
+          const SizedBox(
+            height: 6,
+          ),
           Text(
             'S/ ${offer.estimatedFare}',
-            textAlign: TextAlign.center,
-            style: const TextStyle(fontSize: 24, fontWeight: FontWeight.w600),
+            textAlign:
+                TextAlign.center,
+            style:
+                const TextStyle(
+              fontSize: 24,
+              fontWeight:
+                  FontWeight.w600,
+            ),
           ),
-
-          const SizedBox(height: 20),
-
+          const SizedBox(
+            height: 20,
+          ),
           Card(
             child: Padding(
-              padding: const EdgeInsets.all(20),
+              padding:
+                  const EdgeInsets.all(
+                20,
+              ),
               child: Column(
                 children: [
                   const Text(
                     'El pasajero ofrece',
-                    style: TextStyle(fontSize: 18),
+                    style:
+                        TextStyle(
+                      fontSize: 18,
+                    ),
                   ),
-                  const SizedBox(height: 8),
+                  const SizedBox(
+                    height: 8,
+                  ),
                   Text(
                     'S/ ${offer.passengerOfferFare}',
-                    style: const TextStyle(
+                    style:
+                        const TextStyle(
                       fontSize: 38,
-                      fontWeight: FontWeight.bold,
+                      fontWeight:
+                          FontWeight.bold,
                     ),
                   ),
                 ],
               ),
             ),
           ),
-
-          const SizedBox(height: 24),
-
+          const SizedBox(
+            height: 24,
+          ),
           Card(
             child: Padding(
-              padding: const EdgeInsets.all(16),
+              padding:
+                  const EdgeInsets.all(
+                16,
+              ),
               child: Column(
                 children: [
                   ListTile(
-                    leading: const Icon(Icons.my_location),
-                    title: const Text('Recoger en'),
-                    subtitle: Text(offer.originAddress),
+                    leading:
+                        const Icon(
+                      Icons.my_location,
+                    ),
+                    title:
+                        const Text(
+                      'Recoger en',
+                    ),
+                    subtitle:
+                        Text(
+                      offer.originAddress,
+                    ),
                   ),
-
                   const Divider(),
-
                   ListTile(
-                    leading: const Icon(Icons.location_on),
-                    title: const Text('Destino'),
-                    subtitle: Text(offer.destinationAddress),
+                    leading:
+                        const Icon(
+                      Icons.location_on,
+                    ),
+                    title:
+                        const Text(
+                      'Destino',
+                    ),
+                    subtitle:
+                        Text(
+                      offer.destinationAddress,
+                    ),
                   ),
                 ],
               ),
             ),
           ),
-
-          const SizedBox(height: 16),
-
+          const SizedBox(
+            height: 16,
+          ),
           Text(
             'Estás a '
             '${(offer.distanceToOriginMeters / 1000).toStringAsFixed(1)} km '
             'del pasajero',
-            textAlign: TextAlign.center,
+            textAlign:
+                TextAlign.center,
           ),
-
-          const SizedBox(height: 28),
-
+          const SizedBox(
+            height: 28,
+          ),
           FilledButton.icon(
-            onPressed: _accepting ? null : _acceptOffer,
-            icon: _accepting
-                ? const SizedBox(
-                    width: 20,
-                    height: 20,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
-                : const Icon(Icons.check),
-            label: Padding(
-              padding: const EdgeInsets.symmetric(vertical: 16),
-              child: Text(
+            onPressed:
+                _accepting
+                    ? null
+                    : _acceptOffer,
+            icon:
+                _accepting
+                    ? const SizedBox(
+                        width: 20,
+                        height: 20,
+                        child:
+                            CircularProgressIndicator(
+                          strokeWidth:
+                              2,
+                        ),
+                      )
+                    : const Icon(
+                        Icons.check,
+                      ),
+            label:
+                Padding(
+              padding:
+                  const EdgeInsets.symmetric(
+                vertical: 16,
+              ),
+              child:
+                  Text(
                 _accepting
                     ? 'Enviando...'
                     : 'Aceptar S/ '
-                          '${offer.passengerOfferFare}',
+                        '${offer.passengerOfferFare}',
               ),
             ),
           ),
-
-          const SizedBox(height: 12),
-
+          const SizedBox(
+            height: 12,
+          ),
           OutlinedButton.icon(
-            onPressed: _accepting ? null : _counterOffer,
-            icon: const Icon(Icons.edit),
-            label: const Padding(
-              padding: EdgeInsets.symmetric(vertical: 16),
-              child: Text('Hacer contraoferta'),
+            onPressed:
+                _accepting
+                    ? null
+                    : _counterOffer,
+            icon:
+                const Icon(
+              Icons.edit,
+            ),
+            label:
+                const Padding(
+              padding:
+                  EdgeInsets.symmetric(
+                vertical: 16,
+              ),
+              child:
+                  Text(
+                'Hacer contraoferta',
+              ),
             ),
           ),
-          const SizedBox(height: 8),
-
+          const SizedBox(
+            height: 8,
+          ),
           TextButton(
-            onPressed: _accepting ? null : _rejectOffer,
-            child: const Padding(
-              padding: EdgeInsets.symmetric(vertical: 12),
-              child: Text('Rechazar solicitud'),
+            onPressed:
+                _accepting
+                    ? null
+                    : _rejectOffer,
+            child:
+                const Padding(
+              padding:
+                  EdgeInsets.symmetric(
+                vertical: 12,
+              ),
+              child:
+                  Text(
+                'Rechazar solicitud',
+              ),
             ),
           ),
         ],
       ),
     );
   }
+}
+
+class _DriverLocationException
+    implements Exception {
+  const _DriverLocationException(
+    this.message,
+  );
+
+  final String message;
+
+  @override
+  String toString() => message;
 }

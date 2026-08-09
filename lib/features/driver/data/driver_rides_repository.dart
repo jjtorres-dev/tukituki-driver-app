@@ -5,7 +5,7 @@ import '../../../core/network/api_client.dart';
 import '../domain/driver_active_ride.dart';
 import '../domain/driver_ride_completion.dart';
 
-final driverRidesRepositoryProvider = Provider<DriverRidesRepository>((ref) {
+final driverRidesRepositoryProvider = Provider((ref) {
   return DriverRidesRepository(ref.watch(dioProvider));
 });
 

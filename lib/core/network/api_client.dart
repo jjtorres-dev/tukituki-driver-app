@@ -22,16 +22,26 @@ final dioProvider = Provider<Dio>((ref) {
     ),
   );
 
-  dio.interceptors.add(_SafeNetworkLogger());
+  dio.interceptors.add(
+    _SafeNetworkLogger(),
+  );
 
-  dio.interceptors.add(AuthInterceptor(dio, storage));
+  dio.interceptors.add(
+    AuthInterceptor(
+      dio,
+      storage,
+    ),
+  );
 
   return dio;
 });
 
 class _SafeNetworkLogger extends Interceptor {
   @override
-  void onRequest(RequestOptions options, RequestInterceptorHandler handler) {
+  void onRequest(
+    RequestOptions options,
+    RequestInterceptorHandler handler,
+  ) {
     if (kDebugMode) {
       debugPrint(
         'API -> ${options.method} '
@@ -44,7 +54,7 @@ class _SafeNetworkLogger extends Interceptor {
 
   @override
   void onResponse(
-    Response<dynamic> response,
+    Response response,
     ResponseInterceptorHandler handler,
   ) {
     if (kDebugMode) {
@@ -59,7 +69,10 @@ class _SafeNetworkLogger extends Interceptor {
   }
 
   @override
-  void onError(DioException err, ErrorInterceptorHandler handler) {
+  void onError(
+    DioException err,
+    ErrorInterceptorHandler handler,
+  ) {
     if (kDebugMode) {
       debugPrint(
         'API !! ${err.response?.statusCode ?? '-'} '
@@ -74,12 +87,17 @@ class _SafeNetworkLogger extends Interceptor {
 }
 
 class AuthInterceptor extends Interceptor {
-  AuthInterceptor(this._dio, this._storage);
+  AuthInterceptor(
+    this._dio,
+    this._storage,
+  );
+
+  static const String _authRetryKey =
+      '_auth_retry_attempted';
 
   final Dio _dio;
   final FlutterSecureStorage _storage;
 
-  bool _refreshing = false;
   Future<bool>? _refreshFuture;
 
   @override
@@ -87,110 +105,172 @@ class AuthInterceptor extends Interceptor {
     RequestOptions options,
     RequestInterceptorHandler handler,
   ) async {
-    final accessToken = await _storage.read(key: StorageKeys.accessToken);
+    if (_shouldSkipAuthHeader(options.path)) {
+      options.headers.remove('Authorization');
+      handler.next(options);
+      return;
+    }
 
-    if (accessToken != null && accessToken.isNotEmpty) {
-      options.headers['Authorization'] = 'Bearer $accessToken';
+    final accessToken = await _storage.read(
+      key: StorageKeys.accessToken,
+    );
+
+    if (accessToken != null &&
+        accessToken.isNotEmpty) {
+      options.headers['Authorization'] =
+          'Bearer $accessToken';
+    } else {
+      options.headers.remove('Authorization');
     }
 
     handler.next(options);
   }
 
   @override
-  void onError(DioException err, ErrorInterceptorHandler handler) async {
+  void onError(
+    DioException err,
+    ErrorInterceptorHandler handler,
+  ) async {
     final statusCode = err.response?.statusCode;
+    final requestOptions = err.requestOptions;
 
-    if (statusCode != 401 || _shouldSkipRefresh(err.requestOptions.path)) {
+    if (statusCode != 401 ||
+        _shouldSkipRefresh(requestOptions.path)) {
       handler.next(err);
       return;
     }
 
-    final refreshToken = await _storage.read(key: StorageKeys.refreshToken);
+    final alreadyRetried =
+        requestOptions.extra[_authRetryKey] == true;
 
-    if (refreshToken == null || refreshToken.isEmpty) {
+    if (alreadyRetried) {
+      await _clearSession();
       handler.next(err);
       return;
     }
+
+    final refreshed =
+        await _refreshSession();
+
+    if (!refreshed) {
+      await _clearSession();
+      handler.next(err);
+      return;
+    }
+
+    final newAccessToken = await _storage.read(
+      key: StorageKeys.accessToken,
+    );
+
+    if (newAccessToken == null ||
+        newAccessToken.isEmpty) {
+      await _clearSession();
+      handler.next(err);
+      return;
+    }
+
+    requestOptions.headers['Authorization'] =
+        'Bearer $newAccessToken';
+
+    requestOptions.extra[_authRetryKey] = true;
 
     try {
-      final refreshed = await _refreshSession(refreshToken);
-
-      if (!refreshed) {
-        await _clearSession();
-
-        handler.next(err);
-        return;
-      }
-
-      final newAccessToken = await _storage.read(key: StorageKeys.accessToken);
-
-      if (newAccessToken == null || newAccessToken.isEmpty) {
-        handler.next(err);
-        return;
-      }
-
-      final requestOptions = err.requestOptions;
-
-      requestOptions.headers['Authorization'] = 'Bearer $newAccessToken';
-
-      final response = await _dio.fetch<dynamic>(requestOptions);
+      final response =
+          await _dio.fetch<dynamic>(
+        requestOptions,
+      );
 
       handler.resolve(response);
+    } on DioException catch (retryError) {
+      handler.next(retryError);
     } catch (error) {
       if (kDebugMode) {
-        debugPrint('AUTH REFRESH ERROR: $error');
+        debugPrint(
+          'AUTH RETRY ERROR: $error',
+        );
       }
-
-      await _clearSession();
 
       handler.next(err);
     }
   }
 
-  bool _shouldSkipRefresh(String path) {
+  bool _shouldSkipAuthHeader(
+    String path,
+  ) {
     return path.contains('auth/login') ||
         path.contains('auth/refresh') ||
         path.contains('auth/register') ||
         path.contains('auth/otp/');
   }
 
-  Future<bool> _refreshSession(String refreshToken) async {
-    if (_refreshing && _refreshFuture != null) {
-      return _refreshFuture!;
+  bool _shouldSkipRefresh(
+    String path,
+  ) {
+    return path.contains('auth/login') ||
+        path.contains('auth/refresh') ||
+        path.contains('auth/register') ||
+        path.contains('auth/otp/');
+  }
+
+  Future<bool> _refreshSession() async {
+    final existingRefresh =
+        _refreshFuture;
+
+    if (existingRefresh != null) {
+      return existingRefresh;
     }
 
-    _refreshing = true;
-
-    final future = _performRefresh(refreshToken);
-
+    final future = _performRefresh();
     _refreshFuture = future;
 
     try {
       return await future;
     } finally {
-      _refreshing = false;
-      _refreshFuture = null;
+      if (identical(
+        _refreshFuture,
+        future,
+      )) {
+        _refreshFuture = null;
+      }
     }
   }
 
-  Future<bool> _performRefresh(String refreshToken) async {
+  Future<bool> _performRefresh() async {
+    final refreshToken = await _storage.read(
+      key: StorageKeys.refreshToken,
+    );
+
+    if (refreshToken == null ||
+        refreshToken.isEmpty) {
+      return false;
+    }
+
     final refreshDio = Dio(
       BaseOptions(
-        baseUrl: AppConfig.normalizedApiBaseUrl,
-        connectTimeout: const Duration(seconds: 10),
-        receiveTimeout: const Duration(seconds: 10),
-        sendTimeout: const Duration(seconds: 10),
+        baseUrl:
+            AppConfig.normalizedApiBaseUrl,
+        connectTimeout:
+            const Duration(seconds: 10),
+        receiveTimeout:
+            const Duration(seconds: 10),
+        sendTimeout:
+            const Duration(seconds: 10),
         headers: const {
           'Accept': 'application/json',
-          'Content-Type': 'application/json',
+          'Content-Type':
+              'application/json',
         },
       ),
     );
 
     try {
-      final response = await refreshDio.post<Map<String, dynamic>>(
+      final response =
+          await refreshDio
+              .post<Map<String, dynamic>>(
         'auth/refresh',
-        data: {'refreshToken': refreshToken},
+        data: {
+          'refreshToken': refreshToken,
+        },
       );
 
       final data = response.data;
@@ -199,36 +279,64 @@ class AuthInterceptor extends Interceptor {
         return false;
       }
 
-      final accessToken = data['accessToken'] as String?;
+      final accessToken =
+          data['accessToken'] as String?;
 
-      final newRefreshToken = data['refreshToken'] as String?;
+      final newRefreshToken =
+          data['refreshToken'] as String?;
 
-      final sessionId = data['sessionId'] as String?;
+      final sessionId =
+          data['sessionId'] as String?;
 
-      if (accessToken == null || newRefreshToken == null || sessionId == null) {
+      if (accessToken == null ||
+          accessToken.isEmpty ||
+          newRefreshToken == null ||
+          newRefreshToken.isEmpty ||
+          sessionId == null ||
+          sessionId.isEmpty) {
         return false;
       }
 
-      await _storage.write(key: StorageKeys.accessToken, value: accessToken);
+      await _storage.write(
+        key: StorageKeys.accessToken,
+        value: accessToken,
+      );
 
       await _storage.write(
         key: StorageKeys.refreshToken,
         value: newRefreshToken,
       );
 
-      await _storage.write(key: StorageKeys.sessionId, value: sessionId);
+      await _storage.write(
+        key: StorageKeys.sessionId,
+        value: sessionId,
+      );
 
       return true;
     } on DioException {
+      return false;
+    } catch (error) {
+      if (kDebugMode) {
+        debugPrint(
+          'AUTH REFRESH ERROR: $error',
+        );
+      }
+
       return false;
     }
   }
 
   Future<void> _clearSession() async {
-    await _storage.delete(key: StorageKeys.accessToken);
+    await _storage.delete(
+      key: StorageKeys.accessToken,
+    );
 
-    await _storage.delete(key: StorageKeys.refreshToken);
+    await _storage.delete(
+      key: StorageKeys.refreshToken,
+    );
 
-    await _storage.delete(key: StorageKeys.sessionId);
+    await _storage.delete(
+      key: StorageKeys.sessionId,
+    );
   }
 }
