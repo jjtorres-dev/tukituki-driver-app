@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
@@ -14,21 +15,31 @@ class DriverSplashScreen extends ConsumerStatefulWidget {
   ConsumerState<DriverSplashScreen> createState() => _DriverSplashScreenState();
 }
 
-class _DriverSplashScreenState extends ConsumerState<DriverSplashScreen> {
+class _DriverSplashScreenState extends ConsumerState<DriverSplashScreen>
+    with SingleTickerProviderStateMixin {
+  static const _darkGreen = Color(0xFF123B26);
+  static const _brown = Color(0xFF6B4E14);
+
   bool _checking = true;
   String? _errorMessage;
 
   Timer? _initialDelayTimer;
   Completer<void>? _initialDelayCompleter;
+  late final AnimationController _pulseController;
 
   @override
   void initState() {
     super.initState();
+    _pulseController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1800),
+    )..repeat();
     unawaited(_checkSession());
   }
 
   @override
   void dispose() {
+    _pulseController.dispose();
     _initialDelayTimer?.cancel();
     _initialDelayTimer = null;
 
@@ -203,56 +214,442 @@ class _DriverSplashScreenState extends ConsumerState<DriverSplashScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      body: SafeArea(
-        child: Center(
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 32),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Icon(Icons.two_wheeler, size: 84),
-                const SizedBox(height: 20),
-                const Text(
-                  'TukiTuki Conductor',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(fontSize: 30, fontWeight: FontWeight.bold),
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  _checking
-                      ? 'Recuperando tu sesión...'
-                      : 'No pudimos continuar',
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(fontSize: 16),
-                ),
-                const SizedBox(height: 24),
-                if (_checking)
-                  const CircularProgressIndicator()
-                else ...[
-                  Text(
-                    _errorMessage ?? 'No pudimos recuperar tu sesión.',
-                    textAlign: TextAlign.center,
-                  ),
-                  const SizedBox(height: 20),
-                  FilledButton.icon(
-                    onPressed: () {
-                      unawaited(_checkSession(initialDelay: false));
-                    },
-                    icon: const Icon(Icons.refresh),
-                    label: const Text('Reintentar'),
-                  ),
-                  const SizedBox(height: 8),
-                  TextButton(
-                    onPressed: _goToLogin,
-                    child: const Text('Ir al inicio de sesión'),
-                  ),
-                ],
+    return AnnotatedRegion<SystemUiOverlayStyle>(
+      value: SystemUiOverlayStyle.dark.copyWith(
+        statusBarColor: Colors.transparent,
+        statusBarIconBrightness: Brightness.dark,
+        statusBarBrightness: Brightness.light,
+      ),
+      child: Scaffold(
+        body: DecoratedBox(
+          decoration: const BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [
+                Color(0xFFFFDD6B),
+                Color(0xFFFFC72C),
+                Color(0xFFE8951A),
+                Color(0xFFC97313),
               ],
+              stops: [0, 0.4, 0.74, 1],
             ),
+          ),
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              const Positioned(
+                top: -100,
+                right: -80,
+                child: _SplashHalo(size: 280),
+              ),
+              const Positioned(
+                bottom: -120,
+                left: -100,
+                child: _SplashHalo(size: 320),
+              ),
+              const CustomPaint(painter: _SplashBackgroundPainter()),
+              SafeArea(
+                child: LayoutBuilder(
+                  builder: (context, constraints) {
+                    final compact = constraints.maxHeight < 700;
+
+                    return Padding(
+                      padding: EdgeInsets.fromLTRB(
+                        24,
+                        compact ? 12 : 24,
+                        24,
+                        compact ? 14 : 22,
+                      ),
+                      child: Column(
+                        children: [
+                          Expanded(
+                            child: Center(
+                              child: SingleChildScrollView(
+                                child: Column(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    const _DriverModeBadge(),
+                                    SizedBox(height: compact ? 10 : 18),
+                                    _AnimatedDriverLogo(
+                                      animation: _pulseController,
+                                      compact: compact,
+                                    ),
+                                    SizedBox(height: compact ? 8 : 14),
+                                    const Text(
+                                      'TukiTuki',
+                                      textAlign: TextAlign.center,
+                                      style: TextStyle(
+                                        color: _darkGreen,
+                                        fontSize: 29,
+                                        fontWeight: FontWeight.w800,
+                                        letterSpacing: 0.2,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 1),
+                                    const Text(
+                                      'Conductor',
+                                      textAlign: TextAlign.center,
+                                      style: TextStyle(
+                                        color: _darkGreen,
+                                        fontSize: 20,
+                                        fontWeight: FontWeight.w700,
+                                        letterSpacing: 0.3,
+                                      ),
+                                    ),
+                                    SizedBox(height: compact ? 12 : 20),
+                                    AnimatedSwitcher(
+                                      duration: const Duration(
+                                        milliseconds: 220,
+                                      ),
+                                      child: _checking
+                                          ? _SessionLoading(
+                                              animation: _pulseController,
+                                            )
+                                          : _SplashError(
+                                              message:
+                                                  _errorMessage ??
+                                                  'No pudimos recuperar tu sesión.',
+                                              onRetry: () => unawaited(
+                                                _checkSession(
+                                                  initialDelay: false,
+                                                ),
+                                              ),
+                                              onGoToLogin: _goToLogin,
+                                            ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(height: 10),
+                          const Text(
+                            'Prepara tu mototaxi, ya casi estás en línea',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(
+                              color: _brown,
+                              fontSize: 14,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ],
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ],
           ),
         ),
       ),
     );
   }
+}
+
+class _DriverModeBadge extends StatelessWidget {
+  const _DriverModeBadge();
+
+  @override
+  Widget build(BuildContext context) {
+    return Semantics(
+      label: 'Modo conductor',
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+        decoration: BoxDecoration(
+          color: const Color(0xFF123B26).withValues(alpha: 0.96),
+          borderRadius: BorderRadius.circular(999),
+          border: Border.all(
+            color: const Color(0xFFFFDD6B).withValues(alpha: 0.8),
+          ),
+          boxShadow: [
+            BoxShadow(
+              color: const Color(0xFF123B26).withValues(alpha: 0.2),
+              blurRadius: 14,
+              offset: const Offset(0, 5),
+            ),
+          ],
+        ),
+        child: const Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.local_taxi_rounded, size: 16, color: Color(0xFFFFC72C)),
+            SizedBox(width: 7),
+            Text(
+              'MODO CONDUCTOR',
+              style: TextStyle(
+                color: Color(0xFFFFF9EC),
+                fontSize: 12,
+                fontWeight: FontWeight.w700,
+                letterSpacing: 1.05,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _AnimatedDriverLogo extends StatelessWidget {
+  const _AnimatedDriverLogo({required this.animation, required this.compact});
+
+  final Animation<double> animation;
+  final bool compact;
+
+  @override
+  Widget build(BuildContext context) {
+    final extent = compact ? 170.0 : 220.0;
+    final logoWidth = compact ? 150.0 : 184.0;
+
+    return SizedBox(
+      width: extent,
+      height: extent * 0.72,
+      child: AnimatedBuilder(
+        animation: animation,
+        builder: (context, child) {
+          final pulse = animation.value;
+          final secondaryPulse = (pulse + 0.48) % 1;
+
+          return Stack(
+            alignment: Alignment.center,
+            children: [
+              _PulseRing(progress: pulse, diameter: extent * 0.68),
+              _PulseRing(progress: secondaryPulse, diameter: extent * 0.58),
+              Transform.scale(
+                scale: 0.985 + (0.015 * (1 - (pulse - 0.5).abs() * 2)),
+                child: child,
+              ),
+            ],
+          );
+        },
+        child: Container(
+          width: logoWidth,
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(28),
+            boxShadow: [
+              BoxShadow(
+                color: const Color(0xFF6B4E14).withValues(alpha: 0.18),
+                blurRadius: 28,
+                offset: const Offset(0, 12),
+              ),
+            ],
+          ),
+          child: Image.asset(
+            'assets/images/tukituki_driver_logo.png',
+            fit: BoxFit.contain,
+            filterQuality: FilterQuality.high,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _PulseRing extends StatelessWidget {
+  const _PulseRing({required this.progress, required this.diameter});
+
+  final double progress;
+  final double diameter;
+
+  @override
+  Widget build(BuildContext context) {
+    return Opacity(
+      opacity: (1 - progress) * 0.24,
+      child: Transform.scale(
+        scale: 0.82 + (progress * 0.58),
+        child: Container(
+          width: diameter,
+          height: diameter,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            border: Border.all(color: const Color(0xFF123B26), width: 1.4),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _SessionLoading extends StatelessWidget {
+  const _SessionLoading({required this.animation});
+
+  final Animation<double> animation;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      key: const ValueKey('session-loading'),
+      children: [
+        const Text(
+          'Recuperando tu sesión...',
+          textAlign: TextAlign.center,
+          style: TextStyle(
+            color: Color(0xFF6B4E14),
+            fontSize: 15,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+        const SizedBox(height: 13),
+        AnimatedBuilder(
+          animation: animation,
+          builder: (context, child) {
+            return Row(
+              mainAxisSize: MainAxisSize.min,
+              children: List.generate(3, (index) {
+                final phase = (animation.value - (index * 0.16)) % 1;
+                final emphasis = 1 - ((phase - 0.5).abs() * 2);
+                return Container(
+                  width: 8,
+                  height: 8,
+                  margin: const EdgeInsets.symmetric(horizontal: 4),
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: const Color(
+                      0xFF123B26,
+                    ).withValues(alpha: 0.35 + (emphasis * 0.65)),
+                  ),
+                );
+              }),
+            );
+          },
+        ),
+      ],
+    );
+  }
+}
+
+class _SplashError extends StatelessWidget {
+  const _SplashError({
+    required this.message,
+    required this.onRetry,
+    required this.onGoToLogin,
+  });
+
+  final String message;
+  final VoidCallback onRetry;
+  final VoidCallback onGoToLogin;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      key: const ValueKey('session-error'),
+      width: double.infinity,
+      constraints: const BoxConstraints(maxWidth: 360),
+      padding: const EdgeInsets.fromLTRB(18, 17, 18, 12),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFFF9EC).withValues(alpha: 0.9),
+        borderRadius: BorderRadius.circular(22),
+        border: Border.all(color: const Color(0xFFE7E0CB)),
+      ),
+      child: Column(
+        children: [
+          const Text(
+            'No pudimos continuar',
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              color: Color(0xFF123B26),
+              fontSize: 18,
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+          const SizedBox(height: 7),
+          Text(
+            message,
+            textAlign: TextAlign.center,
+            style: const TextStyle(
+              color: Color(0xFF6B4E14),
+              fontSize: 14,
+              fontWeight: FontWeight.w600,
+              height: 1.35,
+            ),
+          ),
+          const SizedBox(height: 14),
+          SizedBox(
+            width: double.infinity,
+            height: 48,
+            child: FilledButton(
+              onPressed: onRetry,
+              style: FilledButton.styleFrom(
+                backgroundColor: const Color(0xFF123B26),
+                foregroundColor: const Color(0xFFFFF9EC),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(16),
+                ),
+              ),
+              child: const Text(
+                'Reintentar',
+                style: TextStyle(fontWeight: FontWeight.w700),
+              ),
+            ),
+          ),
+          TextButton(
+            onPressed: onGoToLogin,
+            style: TextButton.styleFrom(
+              foregroundColor: const Color(0xFFC97313),
+            ),
+            child: const Text('Ir al inicio de sesión'),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _SplashHalo extends StatelessWidget {
+  const _SplashHalo({required this.size});
+
+  final double size;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: size,
+      height: size,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        gradient: RadialGradient(
+          colors: [
+            const Color(0xFFFFF9EC).withValues(alpha: 0.3),
+            const Color(0xFFFFF9EC).withValues(alpha: 0),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _SplashBackgroundPainter extends CustomPainter {
+  const _SplashBackgroundPainter();
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final linePaint = Paint()
+      ..color = const Color(0xFF123B26).withValues(alpha: 0.055)
+      ..strokeWidth = 1.2;
+
+    for (double offset = -size.height; offset < size.width; offset += 64) {
+      canvas.drawLine(
+        Offset(offset, size.height),
+        Offset(offset + size.height * 0.7, 0),
+        linePaint,
+      );
+    }
+
+    final dotPaint = Paint()
+      ..color = const Color(0xFF123B26).withValues(alpha: 0.13);
+    final dots = [
+      Offset(size.width * 0.1, size.height * 0.2),
+      Offset(size.width * 0.86, size.height * 0.28),
+      Offset(size.width * 0.16, size.height * 0.72),
+      Offset(size.width * 0.82, size.height * 0.79),
+      Offset(size.width * 0.7, size.height * 0.1),
+    ];
+    for (final dot in dots) {
+      canvas.drawCircle(dot, 3, dotPaint);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }

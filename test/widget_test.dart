@@ -4,15 +4,9 @@ import 'package:driver/app.dart';
 
 void main() {
   testWidgets('TukiTuki Driver inicia correctamente', (tester) async {
-    await tester.pumpWidget(
-      const ProviderScope(
-        child: TukiTukiDriverApp(),
-      ),
-    );
+    await tester.pumpWidget(const ProviderScope(child: TukiTukiDriverApp()));
 
-    expect(
-      find.text('TukiTuki Conductor'),
-      findsOneWidget,
-    );
+    expect(find.text('TukiTuki'), findsOneWidget);
+    expect(find.text('Conductor'), findsOneWidget);
   });
 }
