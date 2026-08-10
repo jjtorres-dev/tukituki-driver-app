@@ -48,15 +48,15 @@ class DriverRideOffer {
       return false;
     }
 
-    final passenger = double.tryParse(passengerOfferFare);
+    final passenger = _tryParseFareInCents(passengerOfferFare);
 
-    final driver = double.tryParse(proposed);
+    final driver = _tryParseFareInCents(proposed);
 
     if (passenger == null || driver == null) {
       return false;
     }
 
-    return driver > passenger;
+    return driver != passenger;
   }
 
   factory DriverRideOffer.fromJson(Map<String, dynamic> json) {
@@ -98,4 +98,23 @@ class DriverRideOffer {
       expiresAt: DateTime.parse(json['expiresAt'] as String),
     );
   }
+}
+
+int? _tryParseFareInCents(String value) {
+  final normalized = value.trim().replaceAll(',', '.');
+  final match = RegExp(r'^(\d+)(?:\.(\d{1,2}))?$').firstMatch(normalized);
+
+  if (match == null) {
+    return null;
+  }
+
+  final wholeUnits = int.tryParse(match.group(1)!);
+  final decimalPart = (match.group(2) ?? '').padRight(2, '0');
+  final cents = int.tryParse(decimalPart);
+
+  if (wholeUnits == null || cents == null) {
+    return null;
+  }
+
+  return (wholeUnits * 100) + cents;
 }

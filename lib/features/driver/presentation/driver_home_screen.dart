@@ -11,6 +11,7 @@ import '../data/driver_offers_repository.dart';
 import '../data/driver_operations_repository.dart';
 import '../data/driver_rides_repository.dart';
 import '../domain/driver_ride_offer.dart';
+import 'driver_counter_offer_dialog.dart';
 
 class DriverHomeScreen extends ConsumerStatefulWidget {
   const DriverHomeScreen({super.key});
@@ -30,6 +31,7 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
   bool _refreshingPresence = false;
   bool _loadingOffers = false;
   bool _navigatingToRide = false;
+  bool _counterDialogOpen = false;
 
   DriverRideOffer? _offer;
   String? _pendingOfferId;
@@ -744,6 +746,7 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
   Future<void> _loadOffers() async {
     if (!_online ||
         _accepting ||
+        _counterDialogOpen ||
         _loadingOffers ||
         _navigatingToRide) {
       return;
@@ -867,6 +870,7 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
       }
 
       if (!mounted ||
+          _counterDialogOpen ||
           _navigatingToRide) {
         return;
       }
@@ -979,177 +983,58 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
     final offer = _offer;
 
     if (offer == null ||
+        offer.status != 'OFFERED' ||
         _accepting ||
+        _counterDialogOpen ||
         _navigatingToRide) {
       return;
     }
 
-    final controller =
-        TextEditingController();
+    setState(() {
+      _counterDialogOpen = true;
+    });
 
-    String? validationError;
+    String? proposedFare;
 
-    final proposedFare =
-        await showDialog<String>(
-      context: context,
-      builder: (dialogContext) {
-        return StatefulBuilder(
-          builder: (
-            context,
-            setDialogState,
-          ) {
-            return AlertDialog(
-              title:
-                  const Text(
-                'Hacer contraoferta',
-              ),
-              content: Column(
-                mainAxisSize:
-                    MainAxisSize.min,
-                crossAxisAlignment:
-                    CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    'El pasajero ofrece '
-                    'S/ ${offer.passengerOfferFare}',
-                  ),
-                  const SizedBox(
-                    height: 16,
-                  ),
-                  TextField(
-                    controller:
-                        controller,
-                    autofocus:
-                        true,
-                    keyboardType:
-                        const TextInputType
-                            .numberWithOptions(
-                      decimal: true,
-                    ),
-                    decoration:
-                        InputDecoration(
-                      labelText:
-                          'Tu contraoferta',
-                      prefixText:
-                          'S/ ',
-                      errorText:
-                          validationError,
-                    ),
-                  ),
-                ],
-              ),
-              actions: [
-                TextButton(
-                  onPressed: () {
-                    Navigator.of(
-                      dialogContext,
-                    ).pop();
-                  },
-                  child:
-                      const Text(
-                    'Cancelar',
-                  ),
-                ),
-                FilledButton(
-                  onPressed: () {
-                    final raw = controller
-                        .text
-                        .trim()
-                        .replaceAll(
-                          ',',
-                          '.',
-                        );
+    try {
+      proposedFare =
+          await showDriverCounterOfferDialog(
+        context: context,
+        passengerOfferFare:
+            offer.passengerOfferFare,
+      );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _counterDialogOpen = false;
+        });
+      } else {
+        _counterDialogOpen = false;
+      }
+    }
 
-                    final value =
-                        double.tryParse(
-                      raw,
-                    );
+    if (!mounted ||
+        proposedFare == null) {
+      return;
+    }
 
-                    final passengerValue =
-                        double.tryParse(
-                      offer
-                          .passengerOfferFare,
-                    );
+    final currentOffer = _offer;
 
-                    if (value == null ||
-                        value <= 0) {
-                      setDialogState(() {
-                        validationError =
-                            'Ingresa un monto válido.';
-                      });
+    if (currentOffer == null ||
+        currentOffer.id != offer.id ||
+        currentOffer.status != 'OFFERED' ||
+        _accepting ||
+        _navigatingToRide) {
+      await _loadOffers();
 
-                      return;
-                    }
-
-                    final parts =
-                        raw.split('.');
-
-                    if (parts.length > 2 ||
-                        (parts.length == 2 &&
-                            parts[1].length >
-                                2)) {
-                      setDialogState(() {
-                        validationError =
-                            'Usa como máximo 2 decimales.';
-                      });
-
-                      return;
-                    }
-
-                    if (passengerValue !=
-                            null &&
-                        value <=
-                            passengerValue) {
-                      setDialogState(() {
-                        validationError =
-                            'La contraoferta debe ser '
-                            'mayor que S/ '
-                            '${offer.passengerOfferFare}.';
-                      });
-
-                      return;
-                    }
-
-                    if (value > 9999.99) {
-                      setDialogState(() {
-                        validationError =
-                            'El monto es demasiado alto.';
-                      });
-
-                      return;
-                    }
-
-                    Navigator.of(
-                      dialogContext,
-                    ).pop(
-                      value
-                          .toStringAsFixed(
-                        2,
-                      ),
-                    );
-                  },
-                  child:
-                      const Text(
-                    'Enviar',
-                  ),
-                ),
-              ],
-            );
-          },
-        );
-      },
-    );
-
-    controller.dispose();
-
-    if (proposedFare == null ||
-        !mounted) {
       return;
     }
 
     setState(() {
       _accepting = true;
     });
+
+    var reloadOffers = false;
 
     try {
       debugPrint(
@@ -1196,30 +1081,26 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
         return;
       }
 
-      String message =
-          'No se pudo enviar la contraoferta.';
+      final statusCode =
+          error.response?.statusCode;
 
-      if (error.response?.statusCode == 400) {
-        message =
-            'El monto de la contraoferta '
-            'no es válido.';
-      } else if (error.response?.statusCode ==
-          409) {
-        message =
-            'La oferta ya venció o '
-            'dejó de estar disponible.';
-      } else if (error.response?.statusCode ==
-          404) {
-        message =
-            'La oferta ya no está disponible.';
-      } else if (error.response == null) {
-        message =
-            'No se pudo conectar con TukiTuki.';
+      if (statusCode == 409) {
+        setState(() {
+          if (_offer?.id == offer.id) {
+            _offer = null;
+          }
+        });
       }
 
-      _showMessage(message);
+      _showMessage(
+        driverCounterOfferErrorMessage(
+          statusCode: statusCode,
+          hasResponse:
+              error.response != null,
+        ),
+      );
 
-      await _loadOffers();
+      reloadOffers = true;
     } finally {
       if (mounted &&
           !_navigatingToRide) {
@@ -1227,6 +1108,12 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
           _accepting = false;
         });
       }
+    }
+
+    if (reloadOffers &&
+        mounted &&
+        !_navigatingToRide) {
+      await _loadOffers();
     }
   }
 
@@ -1428,6 +1315,7 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
 
   void _goToActiveRide() {
     if (!mounted ||
+        _counterDialogOpen ||
         _navigatingToRide) {
       return;
     }
