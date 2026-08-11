@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../../core/storage/secure_storage.dart';
 import '../../auth/data/auth_repository.dart';
 import '../data/driver_offers_repository.dart';
 import '../data/driver_operations_repository.dart';
@@ -78,6 +79,7 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
   bool _loadingStats = false;
   bool _navigatingToRide = false;
   bool _counterDialogOpen = false;
+  bool _sessionInvalidHandled = false;
 
   DriverOperationalState? _operationalState;
   DriverDailyStats? _dailyStats;
@@ -209,6 +211,10 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
         'type=${error.type}',
       );
 
+      if (await _handleSessionInvalidatedIfNeeded()) {
+        return;
+      }
+
       if (mounted) {
         setState(() {
           _status = DriverHomeStatus.error;
@@ -326,6 +332,56 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
     }
 
     return 'No se pudo recuperar tu estado. Intenta nuevamente.';
+  }
+
+  // ---------------------------------------------------------------------
+  // Sesión inválida (401 definitivo)
+  // ---------------------------------------------------------------------
+
+  /// Señal más segura disponible sin duplicar el sistema de
+  /// autenticación: ApiClient (AuthInterceptor) solo elimina el
+  /// accessToken cuando un 401 no pudo resolverse con refresh.
+  /// Errores temporales (timeout, red, 5xx) nunca tocan los tokens.
+  Future<bool> _hasValidSession() async {
+    final accessToken = await ref
+        .read(secureStorageProvider)
+        .read(key: StorageKeys.accessToken);
+
+    return accessToken != null && accessToken.isNotEmpty;
+  }
+
+  /// Si la sesión ya fue invalidada definitivamente, detiene los
+  /// workers y navega a login una sola vez, incluso si varios
+  /// requests fallan al mismo tiempo (heartbeat + offers + restore).
+  ///
+  /// Devuelve `true` si el llamador debe abandonar su flujo actual
+  /// (ya se navegó o se está navegando a /login).
+  Future<bool> _handleSessionInvalidatedIfNeeded() async {
+    if (_sessionInvalidHandled) {
+      return true;
+    }
+
+    final hasSession = await _hasValidSession();
+
+    if (hasSession) {
+      return false;
+    }
+
+    if (_sessionInvalidHandled) {
+      return true;
+    }
+
+    _sessionInvalidHandled = true;
+
+    _stopOnlineWorkers();
+
+    if (!mounted) {
+      return true;
+    }
+
+    context.go('/login');
+
+    return true;
   }
 
   // ---------------------------------------------------------------------
@@ -498,6 +554,10 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
         'type=${error.type}',
       );
 
+      if (await _handleSessionInvalidatedIfNeeded()) {
+        return;
+      }
+
       if (!mounted) {
         return;
       }
@@ -608,6 +668,10 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
         'status=${error.response?.statusCode} '
         'data=${error.response?.data}',
       );
+
+      if (await _handleSessionInvalidatedIfNeeded()) {
+        return;
+      }
 
       if (!mounted) {
         return;
@@ -911,6 +975,10 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
         'message=${error.message}',
       );
 
+      if (await _handleSessionInvalidatedIfNeeded()) {
+        return false;
+      }
+
       if (error.response?.statusCode == 400) {
         await _reconcileOperationalStatus();
       } else if (error.response?.statusCode == 503) {
@@ -1000,6 +1068,10 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
       });
     } catch (statusError) {
       debugPrint('DRIVER PRESENCE - no se pudo consultar status: $statusError');
+
+      if (statusError is DioException) {
+        await _handleSessionInvalidatedIfNeeded();
+      }
     }
   }
 
@@ -1092,6 +1164,8 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
         'type=${error.type} '
         'message=${error.message}',
       );
+
+      await _handleSessionInvalidatedIfNeeded();
     } catch (error) {
       debugPrint('DRIVER OFFERS ERROR inesperado: $error');
     } finally {
@@ -1157,6 +1231,10 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
         'data=${error.response?.data}',
       );
 
+      if (await _handleSessionInvalidatedIfNeeded()) {
+        return;
+      }
+
       if (!mounted) {
         return;
       }
@@ -1175,7 +1253,7 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
 
       await _loadOffers();
     } finally {
-      if (mounted && !_navigatingToRide) {
+      if (mounted && !_navigatingToRide && !_sessionInvalidHandled) {
         setState(() {
           _accepting = false;
         });
@@ -1269,6 +1347,10 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
         'data=${error.response?.data}',
       );
 
+      if (await _handleSessionInvalidatedIfNeeded()) {
+        return;
+      }
+
       if (!mounted) {
         return;
       }
@@ -1292,7 +1374,7 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
 
       reloadOffers = true;
     } finally {
-      if (mounted && !_navigatingToRide) {
+      if (mounted && !_navigatingToRide && !_sessionInvalidHandled) {
         setState(() {
           _accepting = false;
         });
@@ -1336,6 +1418,10 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
         'data=${error.response?.data}',
       );
 
+      if (await _handleSessionInvalidatedIfNeeded()) {
+        return;
+      }
+
       if (!mounted) {
         return;
       }
@@ -1352,7 +1438,7 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
 
       _showMessage(message);
     } finally {
-      if (mounted && !_navigatingToRide) {
+      if (mounted && !_navigatingToRide && !_sessionInvalidHandled) {
         setState(() {
           _accepting = false;
         });

@@ -17,6 +17,10 @@ class DriverPendingProposal {
     required this.originAddress,
     required this.destinationAddress,
     required this.distanceToOriginMeters,
+    this.originLatitude,
+    this.originLongitude,
+    this.destinationLatitude,
+    this.destinationLongitude,
   });
 
   final String offerId;
@@ -34,9 +38,20 @@ class DriverPendingProposal {
   final String originAddress;
   final String destinationAddress;
 
+  /// Coordenadas reales del origin/destination, cuando Backend las
+  /// envía. Se usarán para el checkpoint de Google Maps: no se
+  /// inventan valores por defecto si faltan.
+  final double? originLatitude;
+  final double? originLongitude;
+  final double? destinationLatitude;
+  final double? destinationLongitude;
+
   final num distanceToOriginMeters;
 
   factory DriverPendingProposal.fromJson(Map<String, dynamic> json) {
+    final origin = json['origin'];
+    final destination = json['destination'];
+
     return DriverPendingProposal(
       offerId: json['offerId']?.toString() ?? json['id']?.toString() ?? '',
       rideId: json['rideId']?.toString() ?? '',
@@ -46,8 +61,12 @@ class DriverPendingProposal {
       estimatedFare: json['estimatedFare']?.toString() ?? '0.00',
       currency: json['currency']?.toString() ?? 'PEN',
       expiresAt: _tryParseDate(json['expiresAt']),
-      originAddress: _addressOf(json['origin']) ?? 'Origen',
-      destinationAddress: _addressOf(json['destination']) ?? 'Destino',
+      originAddress: _addressOf(origin) ?? 'Origen',
+      destinationAddress: _addressOf(destination) ?? 'Destino',
+      originLatitude: _tryParseDouble(_fieldOf(origin, 'latitude')),
+      originLongitude: _tryParseDouble(_fieldOf(origin, 'longitude')),
+      destinationLatitude: _tryParseDouble(_fieldOf(destination, 'latitude')),
+      destinationLongitude: _tryParseDouble(_fieldOf(destination, 'longitude')),
       distanceToOriginMeters: json['distanceToOriginMeters'] as num? ?? 0,
     );
   }
@@ -63,6 +82,26 @@ String? _addressOf(dynamic value) {
   }
 
   return null;
+}
+
+dynamic _fieldOf(dynamic value, String key) {
+  if (value is Map) {
+    return value[key];
+  }
+
+  return null;
+}
+
+double? _tryParseDouble(dynamic value) {
+  if (value == null) {
+    return null;
+  }
+
+  if (value is num) {
+    return value.toDouble();
+  }
+
+  return double.tryParse(value.toString());
 }
 
 DateTime? _tryParseDate(dynamic value) {
