@@ -45,6 +45,7 @@ class DriverActiveRideScreen extends ConsumerStatefulWidget {
 class _DriverActiveRideScreenState
     extends ConsumerState<DriverActiveRideScreen> {
   final _codeController = TextEditingController();
+  final _codeFocusNode = FocusNode();
 
   DriverActiveRide? _ride;
   DriverRideCompletion? _completion;
@@ -54,6 +55,16 @@ class _DriverActiveRideScreenState
   bool _activityInFlight = false;
 
   String? _error;
+
+  /// Último error real del PIN/GPS al intentar `start`. Vive solo en
+  /// memoria de esta pantalla (nunca se persiste), y se limpia al
+  /// empezar a editar un código nuevo.
+  _PinSubmitError? _pinError;
+
+  /// `true` únicamente cuando Backend confirmó 423 (código bloqueado
+  /// por intentos). Deshabilita el submit hasta que el Ride cambie de
+  /// estado por otra vía real (no hay regeneración desde Driver).
+  bool _pinLocked = false;
 
   Timer? _rideTimer;
   Timer? _activityTimer;
@@ -84,6 +95,8 @@ class _DriverActiveRideScreenState
   void initState() {
     super.initState();
 
+    _codeController.addListener(_handleCodeChanged);
+
     unawaited(_loadRide());
 
     _rideTimer = Timer.periodic(const Duration(seconds: 3), (_) {
@@ -100,9 +113,23 @@ class _DriverActiveRideScreenState
     _rideTimer?.cancel();
     _activityTimer?.cancel();
 
+    _codeController.removeListener(_handleCodeChanged);
     _codeController.dispose();
+    _codeFocusNode.dispose();
 
     super.dispose();
+  }
+
+  /// El mensaje de error del PIN permanece visible hasta que el
+  /// Driver empieza a escribir un código nuevo (decisión de UX
+  /// documentada en el reporte del checkpoint): no desaparece solo,
+  /// pero tampoco sobrevive a la siguiente edición real.
+  void _handleCodeChanged() {
+    if (_pinError != null && _codeController.text.isNotEmpty) {
+      setState(() {
+        _pinError = null;
+      });
+    }
   }
 
   void _startActivityTimer() {
@@ -309,9 +336,12 @@ class _DriverActiveRideScreenState
 
   /// Encuadra la cámara UNA sola vez por instancia de esta pantalla
   /// (Driver + pickup real), solo mientras el estado siga siendo
-  /// DRIVER_ASSIGNED/DRIVER_ARRIVING y solo cuando ya tenemos ambos
-  /// puntos reales. No vuelve a dispararse en cada poll de 3s ni en
-  /// cada heartbeat de 10s: por eso el guard `_cameraFramed`.
+  /// DRIVER_ASSIGNED/DRIVER_ARRIVING/DRIVER_ARRIVED y solo cuando ya
+  /// tenemos ambos puntos reales. No vuelve a dispararse en cada poll
+  /// de 3s ni en cada heartbeat de 10s: por eso el guard
+  /// `_cameraFramed`. Incluir DRIVER_ARRIVED (Checkpoint B) cubre el
+  /// restore directo a ese estado, que de otro modo nunca encuadraría
+  /// la cámara en esta sesión.
   void _maybeFrameCamera() {
     if (_cameraFramed || !mounted) {
       return;
@@ -324,7 +354,9 @@ class _DriverActiveRideScreenState
       return;
     }
 
-    if (ride.status != 'DRIVER_ASSIGNED' && ride.status != 'DRIVER_ARRIVING') {
+    if (ride.status != 'DRIVER_ASSIGNED' &&
+        ride.status != 'DRIVER_ARRIVING' &&
+        ride.status != 'DRIVER_ARRIVED') {
       return;
     }
 
@@ -524,22 +556,21 @@ class _DriverActiveRideScreenState
 
     final code = _codeController.text.trim();
 
-    if (ride == null || _changingStatus) {
+    if (ride == null || _changingStatus || _pinLocked) {
       return;
     }
 
     if (!RegExp(r'^\d{4}$').hasMatch(code)) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Ingresa el código de 4 dígitos.')),
-      );
-
+      // Guard defensivo: el CTA ya está deshabilitado con <4 dígitos,
+      // esto nunca debería alcanzarse desde la UI real.
       return;
     }
 
-    FocusScope.of(context).unfocus();
+    _codeFocusNode.unfocus();
 
     setState(() {
       _changingStatus = true;
+      _pinError = null;
     });
 
     try {
@@ -559,53 +590,48 @@ class _DriverActiveRideScreenState
         return;
       }
 
+      // El PIN solo vive en memoria hasta este punto: nunca se
+      // guarda en storage/telemetry, y se descarta explícitamente
+      // apenas Backend confirma el inicio real del viaje.
       _codeController.clear();
 
       setState(() {
         _ride = updatedRide;
       });
-
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('¡Viaje iniciado!')));
     } on _DriverLocationFailure catch (error) {
       if (!mounted) {
         return;
       }
 
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text(error.message)));
+      setState(() {
+        _pinError = _PinSubmitError(_PinErrorKind.location, message: error.message);
+      });
     } on DioException catch (error) {
       if (!mounted) {
         return;
       }
 
-      String message = 'No se pudo iniciar el viaje.';
+      final classified = _classifyStartRideError(error);
 
-      if (error.response?.statusCode == 400) {
-        message =
-            'El código es incorrecto o '
-            'el GPS no es válido.';
-      } else if (error.response?.statusCode == 409) {
-        message =
-            'El viaje no está en un '
-            'estado compatible.';
-      } else if (error.response?.statusCode == 410) {
-        message =
-            'El código venció. '
-            'Solicita uno nuevo.';
-      } else if (error.response?.statusCode == 423) {
-        message =
-            'El código fue bloqueado por '
-            'demasiados intentos.';
-      } else if (error.response == null) {
-        message = 'No se pudo conectar con TukiTuki.';
+      setState(() {
+        _pinError = classified;
+
+        if (classified.kind == _PinErrorKind.incorrect ||
+            classified.kind == _PinErrorKind.expired ||
+            classified.kind == _PinErrorKind.locked) {
+          _codeController.clear();
+        }
+
+        if (classified.kind == _PinErrorKind.locked) {
+          _pinLocked = true;
+        }
+      });
+
+      if (classified.kind == _PinErrorKind.conflict) {
+        // El Ride cambió de estado por otra vía: reutilizamos la
+        // recarga real en vez de inventar una transición local.
+        unawaited(_loadRide(showLoading: false));
       }
-
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text(message)));
     } finally {
       if (mounted) {
         setState(() {
@@ -613,6 +639,63 @@ class _DriverActiveRideScreenState
         });
       }
     }
+  }
+
+  /// Clasifica el 400 real de `start` en sus dos formas distintas
+  /// (código incorrecto vs GPS/distancia) según los campos que
+  /// Backend realmente incluye en cada caso — nunca asume que todo
+  /// 400 es un PIN inválido. Ver `ride-start.service.ts`: el 400 de
+  /// distancia trae `distanceToOriginMeters`/`maximumStartDistanceMeters`;
+  /// el 400 de código incorrecto trae `remainingAttempts`; el 400 de
+  /// calidad de GPS (ausente/vencido/impreciso) no trae ninguno de
+  /// los dos, solo un `message` de texto plano.
+  _PinSubmitError _classifyStartRideError(DioException error) {
+    final statusCode = error.response?.statusCode;
+    final data = error.response?.data;
+
+    if (statusCode == 400) {
+      final remainingAttempts = data is Map ? data['remainingAttempts'] : null;
+
+      if (remainingAttempts is num) {
+        return _PinSubmitError(
+          _PinErrorKind.incorrect,
+          remainingAttempts: remainingAttempts.round(),
+        );
+      }
+
+      final distance = data is Map ? data['distanceToOriginMeters'] : null;
+      final maxDistance = data is Map
+          ? data['maximumStartDistanceMeters']
+          : null;
+
+      if (distance is num && maxDistance is num) {
+        return _PinSubmitError(
+          _PinErrorKind.location,
+          message:
+              'Estás a ${distance.round()} m del punto de recojo '
+              '(máximo ${maxDistance.round()} m).',
+        );
+      }
+
+      return const _PinSubmitError(
+        _PinErrorKind.location,
+        message: 'No pudimos validar tu ubicación en el punto de recojo.',
+      );
+    }
+
+    if (statusCode == 409) {
+      return const _PinSubmitError(_PinErrorKind.conflict);
+    }
+
+    if (statusCode == 410) {
+      return const _PinSubmitError(_PinErrorKind.expired);
+    }
+
+    if (statusCode == 423) {
+      return const _PinSubmitError(_PinErrorKind.locked);
+    }
+
+    return const _PinSubmitError(_PinErrorKind.network);
   }
 
   Future<void> _completeRide() async {
@@ -733,9 +816,6 @@ class _DriverActiveRideScreenState
       case 'DRIVER_ARRIVING':
         return 'En camino al pasajero';
 
-      case 'DRIVER_ARRIVED':
-        return '¡Llegaste!';
-
       case 'IN_PROGRESS':
         return 'Viaje en curso';
 
@@ -751,9 +831,6 @@ class _DriverActiveRideScreenState
 
       case 'DRIVER_ARRIVING':
         return Icons.two_wheeler;
-
-      case 'DRIVER_ARRIVED':
-        return Icons.location_on;
 
       case 'IN_PROGRESS':
         return Icons.route;
@@ -785,6 +862,10 @@ class _DriverActiveRideScreenState
 
     if (ride.status == 'DRIVER_ASSIGNED' || ride.status == 'DRIVER_ARRIVING') {
       return _buildAssignedOrArrivingScreen(ride);
+    }
+
+    if (ride.status == 'DRIVER_ARRIVED') {
+      return _buildArrivedScreen(ride);
     }
 
     return _buildLegacyRideScreen(ride);
@@ -941,73 +1022,6 @@ class _DriverActiveRideScreenState
               ),
 
               const SizedBox(height: 32),
-
-              if (ride.status == 'DRIVER_ARRIVED') ...[
-                Card(
-                  child: Padding(
-                    padding: const EdgeInsets.all(20),
-                    child: Column(
-                      children: [
-                        const Text(
-                          'Código del pasajero',
-                          style: TextStyle(
-                            fontSize: 22,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-
-                        const SizedBox(height: 8),
-
-                        const Text(
-                          'Pídele al pasajero '
-                          'su código de 4 dígitos.',
-                          textAlign: TextAlign.center,
-                        ),
-
-                        const SizedBox(height: 20),
-
-                        TextField(
-                          controller: _codeController,
-                          keyboardType: TextInputType.number,
-                          textAlign: TextAlign.center,
-                          maxLength: 4,
-                          inputFormatters: [
-                            FilteringTextInputFormatter.digitsOnly,
-                            LengthLimitingTextInputFormatter(4),
-                          ],
-                          style: const TextStyle(
-                            fontSize: 34,
-                            fontWeight: FontWeight.bold,
-                            letterSpacing: 12,
-                          ),
-                          decoration: const InputDecoration(
-                            hintText: '0000',
-                            border: OutlineInputBorder(),
-                          ),
-                        ),
-
-                        const SizedBox(height: 12),
-
-                        SizedBox(
-                          width: double.infinity,
-                          child: FilledButton.icon(
-                            onPressed: _changingStatus ? null : _startRide,
-                            icon: const Icon(Icons.play_arrow),
-                            label: Padding(
-                              padding: const EdgeInsets.symmetric(vertical: 16),
-                              child: Text(
-                                _changingStatus
-                                    ? 'Validando...'
-                                    : 'Iniciar viaje',
-                              ),
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              ],
 
               if (ride.status == 'IN_PROGRESS') ...[
                 const Card(
@@ -1176,6 +1190,143 @@ class _DriverActiveRideScreenState
                                         : 'Ir a recoger al pasajero',
                               ),
                             ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            );
+          },
+        ),
+      ),
+    );
+  }
+
+  // ---------------------------------------------------------------------
+  // DRIVER_ARRIVED + PIN — Checkpoint B
+  // ---------------------------------------------------------------------
+
+  Widget _buildArrivedScreen(DriverActiveRide ride) {
+    return Scaffold(
+      backgroundColor: DriverPalette.cream,
+      appBar: AppBar(
+        backgroundColor: DriverPalette.cream,
+        elevation: 0,
+        automaticallyImplyLeading: false,
+        foregroundColor: DriverPalette.greenPrimary,
+        title: const Text(
+          'Tu viaje',
+          style: TextStyle(fontWeight: FontWeight.w800),
+        ),
+      ),
+      body: SafeArea(
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            final mapHeight = (constraints.maxHeight * 0.28).clamp(
+              140.0,
+              260.0,
+            );
+
+            return Column(
+              children: [
+                SizedBox(
+                  height: mapHeight,
+                  width: double.infinity,
+                  child: DriverHomeMap(
+                    position: _driverPosition,
+                    myLocationEnabled: _driverPosition != null,
+                    cameraRequest: _cameraRequest,
+                    markers: _rideMarkers(ride),
+                  ),
+                ),
+                Expanded(
+                  child: Container(
+                    width: double.infinity,
+                    decoration: const BoxDecoration(
+                      color: DriverPalette.cream,
+                      borderRadius: BorderRadius.vertical(
+                        top: Radius.circular(24),
+                      ),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black26,
+                          blurRadius: 14,
+                          offset: Offset(0, -3),
+                        ),
+                      ],
+                    ),
+                    child: SingleChildScrollView(
+                      padding: const EdgeInsets.fromLTRB(20, 22, 20, 24),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          _ArrivedStatusHeader(
+                            passengerFirstName: ride.passenger?.firstName,
+                          ),
+
+                          const SizedBox(height: 16),
+
+                          _FareCard(fare: ride.displayFare),
+
+                          const SizedBox(height: 14),
+
+                          _PassengerCard(passenger: ride.passenger),
+
+                          const SizedBox(height: 14),
+
+                          _RouteSummaryRow(
+                            originAddress: ride.originAddress,
+                            destinationAddress: ride.destinationAddress,
+                          ),
+
+                          const SizedBox(height: 18),
+
+                          _PinCard(
+                            controller: _codeController,
+                            focusNode: _codeFocusNode,
+                            enabled: !_changingStatus && !_pinLocked,
+                            error: _pinError,
+                          ),
+
+                          const SizedBox(height: 18),
+
+                          AnimatedBuilder(
+                            animation: _codeController,
+                            builder: (context, _) {
+                              final pinComplete =
+                                  _codeController.text.length == 4;
+                              final canSubmit =
+                                  pinComplete && !_changingStatus && !_pinLocked;
+
+                              return FilledButton.icon(
+                                onPressed: canSubmit ? _startRide : null,
+                                style: FilledButton.styleFrom(
+                                  backgroundColor: DriverPalette.greenPrimary,
+                                ),
+                                icon: _changingStatus
+                                    ? const SizedBox(
+                                        width: 20,
+                                        height: 20,
+                                        child: CircularProgressIndicator(
+                                          strokeWidth: 2,
+                                          color: Colors.white,
+                                        ),
+                                      )
+                                    : const Icon(Icons.play_arrow),
+                                label: Padding(
+                                  padding: const EdgeInsets.symmetric(
+                                    vertical: 16,
+                                  ),
+                                  child: Text(
+                                    _changingStatus
+                                        ? 'Validando...'
+                                        : 'Iniciar viaje',
+                                  ),
+                                ),
+                              );
+                            },
                           ),
                         ],
                       ),
@@ -1516,4 +1667,387 @@ class _DistanceChip extends StatelessWidget {
       ),
     );
   }
+}
+
+// ---------------------------------------------------------------------
+// DRIVER_ARRIVED + PIN — widgets de Checkpoint B
+// ---------------------------------------------------------------------
+
+class _ArrivedStatusHeader extends StatelessWidget {
+  const _ArrivedStatusHeader({required this.passengerFirstName});
+
+  final String? passengerFirstName;
+
+  @override
+  Widget build(BuildContext context) {
+    final name = passengerFirstName;
+
+    final subtitle = (name == null || name.isEmpty)
+        ? 'Pide al pasajero su código de 4 dígitos'
+        : 'Pide el código de 4 dígitos a $name';
+
+    return Column(
+      children: [
+        Container(
+          width: 56,
+          height: 56,
+          decoration: BoxDecoration(
+            color: DriverPalette.greenAvailable.withValues(alpha: 0.16),
+            shape: BoxShape.circle,
+          ),
+          child: const Icon(
+            Icons.check_circle,
+            color: DriverPalette.greenAvailable,
+            size: 30,
+          ),
+        ),
+        const SizedBox(height: 14),
+        const Text(
+          '¡Llegaste!',
+          textAlign: TextAlign.center,
+          style: TextStyle(
+            fontSize: 22,
+            fontWeight: FontWeight.w800,
+            color: DriverPalette.greenPrimary,
+          ),
+        ),
+        const SizedBox(height: 6),
+        Text(
+          subtitle,
+          textAlign: TextAlign.center,
+          style: const TextStyle(color: DriverPalette.brown),
+        ),
+      ],
+    );
+  }
+}
+
+/// Resumen compacto "✓ Recojo → Destino": el texto completo de cada
+/// dirección sigue viviendo en el widget (accesible/seleccionable),
+/// solo se trunca visualmente con ellipsis si no entra en una línea.
+class _RouteSummaryRow extends StatelessWidget {
+  const _RouteSummaryRow({
+    required this.originAddress,
+    required this.destinationAddress,
+  });
+
+  final String originAddress;
+  final String destinationAddress;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Row(
+        children: [
+          const Icon(
+            Icons.check_circle,
+            size: 16,
+            color: DriverPalette.greenAvailable,
+          ),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Text(
+              originAddress,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+                color: DriverPalette.brown,
+              ),
+            ),
+          ),
+          const Padding(
+            padding: EdgeInsets.symmetric(horizontal: 6),
+            child: Icon(
+              Icons.arrow_forward,
+              size: 14,
+              color: DriverPalette.brown,
+            ),
+          ),
+          Expanded(
+            child: Text(
+              destinationAddress,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              textAlign: TextAlign.right,
+              style: const TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+                color: DriverPalette.brown,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _PinCard extends StatelessWidget {
+  const _PinCard({
+    required this.controller,
+    required this.focusNode,
+    required this.enabled,
+    required this.error,
+  });
+
+  final TextEditingController controller;
+  final FocusNode focusNode;
+  final bool enabled;
+  final _PinSubmitError? error;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Column(
+        children: [
+          _PinInput(
+            controller: controller,
+            focusNode: focusNode,
+            enabled: enabled,
+            hasError: error != null,
+          ),
+          if (error != null) ...[
+            const SizedBox(height: 10),
+            _PinErrorBanner(error: error!),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+/// 4 cajas visuales controladas por un único `TextField` real,
+/// invisible pero funcional (opción A del brief: "menos frágil" que
+/// coordinar 4 campos por separado). El teclado numérico, el borrado,
+/// el foco y el pegado de 4 dígitos son comportamiento nativo de
+/// `TextField`: no se reimplementa nada de eso a mano.
+class _PinInput extends StatelessWidget {
+  const _PinInput({
+    required this.controller,
+    required this.focusNode,
+    required this.enabled,
+    required this.hasError,
+  });
+
+  final TextEditingController controller;
+  final FocusNode focusNode;
+  final bool enabled;
+  final bool hasError;
+
+  static const int _length = 4;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: 64,
+      child: Stack(
+        children: [
+          AnimatedBuilder(
+            animation: Listenable.merge([controller, focusNode]),
+            builder: (context, _) {
+              final text = controller.text;
+              final hasFocus = focusNode.hasFocus;
+
+              return Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: List.generate(_length, (index) {
+                  final digit = index < text.length ? text[index] : '';
+                  final isNextToFill = enabled && hasFocus && index == text.length;
+
+                  return _PinBox(
+                    key: ValueKey('pin-box-$index'),
+                    digit: digit,
+                    active: isNextToFill,
+                    hasError: hasError,
+                  );
+                }),
+              );
+            },
+          ),
+          Positioned.fill(
+            child: Opacity(
+              opacity: 0,
+              child: Semantics(
+                label: 'Código de 4 dígitos del pasajero',
+                textField: true,
+                child: TextField(
+                  controller: controller,
+                  focusNode: focusNode,
+                  enabled: enabled,
+                  keyboardType: TextInputType.number,
+                  inputFormatters: [
+                    FilteringTextInputFormatter.digitsOnly,
+                    LengthLimitingTextInputFormatter(_length),
+                  ],
+                  showCursor: false,
+                  decoration: const InputDecoration(
+                    border: InputBorder.none,
+                    counterText: '',
+                  ),
+                  style: const TextStyle(color: Colors.transparent),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _PinBox extends StatelessWidget {
+  const _PinBox({
+    super.key,
+    required this.digit,
+    required this.active,
+    required this.hasError,
+  });
+
+  final String digit;
+  final bool active;
+  final bool hasError;
+
+  @override
+  Widget build(BuildContext context) {
+    final Color borderColor;
+    final double borderWidth;
+
+    if (hasError) {
+      borderColor = DriverPalette.coral;
+      borderWidth = 2;
+    } else if (active) {
+      borderColor = DriverPalette.amber;
+      borderWidth = 2;
+    } else {
+      borderColor = DriverPalette.brown.withValues(alpha: 0.25);
+      borderWidth = 1;
+    }
+
+    return Container(
+      width: 56,
+      height: 64,
+      alignment: Alignment.center,
+      decoration: BoxDecoration(
+        color: DriverPalette.cream,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: borderColor, width: borderWidth),
+      ),
+      // Sin ocultar el dígito: el pasajero ya lo está dictando en voz
+      // alta, no es una contraseña que deba protegerse visualmente.
+      child: Text(
+        digit,
+        style: const TextStyle(
+          fontSize: 26,
+          fontWeight: FontWeight.w800,
+          color: DriverPalette.greenPrimary,
+        ),
+      ),
+    );
+  }
+}
+
+class _PinErrorBanner extends StatelessWidget {
+  const _PinErrorBanner({required this.error});
+
+  final _PinSubmitError error;
+
+  @override
+  Widget build(BuildContext context) {
+    final title = _pinErrorTitle(error.kind);
+    final subtitle = _pinErrorSubtitle(error);
+
+    return Column(
+      children: [
+        Text(
+          title,
+          textAlign: TextAlign.center,
+          style: const TextStyle(
+            color: DriverPalette.coral,
+            fontWeight: FontWeight.w700,
+            fontSize: 14,
+          ),
+        ),
+        if (subtitle != null) ...[
+          const SizedBox(height: 2),
+          Text(
+            subtitle,
+            textAlign: TextAlign.center,
+            style: const TextStyle(color: DriverPalette.coral, fontSize: 12),
+          ),
+        ],
+      ],
+    );
+  }
+}
+
+enum _PinErrorKind { incorrect, expired, locked, location, conflict, network }
+
+/// Error real de `start` clasificado por tipo. `remainingAttempts`
+/// solo se llena cuando Backend lo entrega en el 400 de código
+/// incorrecto — nunca se agrega al modelo de Ride, vive únicamente
+/// como estado local de esta pantalla.
+class _PinSubmitError {
+  const _PinSubmitError(this.kind, {this.remainingAttempts, this.message});
+
+  final _PinErrorKind kind;
+  final int? remainingAttempts;
+  final String? message;
+}
+
+String _pinErrorTitle(_PinErrorKind kind) {
+  switch (kind) {
+    case _PinErrorKind.incorrect:
+      return 'Código incorrecto';
+    case _PinErrorKind.expired:
+      return 'Código vencido';
+    case _PinErrorKind.locked:
+      return 'Código bloqueado';
+    case _PinErrorKind.location:
+      return 'No pudimos validar tu ubicación';
+    case _PinErrorKind.conflict:
+      return 'El viaje cambió de estado';
+    case _PinErrorKind.network:
+      return 'No pudimos iniciar el viaje';
+  }
+}
+
+String? _pinErrorSubtitle(_PinSubmitError error) {
+  switch (error.kind) {
+    case _PinErrorKind.incorrect:
+      final remaining = error.remainingAttempts;
+
+      return remaining == null ? null : _attemptsLabel(remaining);
+    case _PinErrorKind.expired:
+      return 'El código del pasajero ya venció.';
+    case _PinErrorKind.locked:
+      return 'Se agotaron los intentos disponibles.';
+    case _PinErrorKind.location:
+      return error.message;
+    case _PinErrorKind.conflict:
+      return 'Actualizando...';
+    case _PinErrorKind.network:
+      return 'Inténtalo nuevamente.';
+  }
+}
+
+/// Singular/plural real, nunca hardcodeado como "5 intentos": el
+/// número siempre viene de Backend.
+String _attemptsLabel(int remaining) {
+  return remaining == 1
+      ? '1 intento restante'
+      : '$remaining intentos restantes';
 }
