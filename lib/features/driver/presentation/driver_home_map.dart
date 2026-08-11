@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
@@ -73,21 +74,29 @@ class DriverMapCameraRequest {
     required this.id,
     required this.target,
     this.zoom = DriverHomeMap.initialZoom,
+    this.secondaryTarget,
   });
 
   final int id;
   final LatLng target;
   final double zoom;
 
+  /// Segundo punto a encuadrar junto con [target] (por ejemplo, el
+  /// pickup real mientras el Driver se dirige a recogerlo). Si está
+  /// presente, la cámara ajusta bounds para mostrar ambos puntos en
+  /// vez de centrar+zoom fijo en uno solo.
+  final LatLng? secondaryTarget;
+
   @override
   bool operator ==(Object other) =>
       other is DriverMapCameraRequest &&
       other.id == id &&
       other.target == target &&
-      other.zoom == zoom;
+      other.zoom == zoom &&
+      other.secondaryTarget == secondaryTarget;
 
   @override
-  int get hashCode => Object.hash(id, target, zoom);
+  int get hashCode => Object.hash(id, target, zoom, secondaryTarget);
 }
 
 /// Área de mapa del Home: GoogleMap real centrado en la posición del
@@ -109,6 +118,7 @@ class DriverHomeMap extends StatefulWidget {
     required this.myLocationEnabled,
     this.fallback = DriverHomeMapFallback.acquiring,
     this.cameraRequest,
+    this.markers = const <Marker>{},
   });
 
   final Position? position;
@@ -121,10 +131,16 @@ class DriverHomeMap extends StatefulWidget {
 
   final DriverHomeMapFallback fallback;
 
-  /// Último pedido de centrado de cámara emitido por Home (conectar,
-  /// reconectar, tap en el botón de recentrado). Null = ningún pedido
-  /// pendiente todavía.
+  /// Último pedido de centrado de cámara emitido por el padre
+  /// (conectar/reconectar, recentrado manual, encuadrar ride activo).
+  /// Null = ningún pedido pendiente todavía.
   final DriverMapCameraRequest? cameraRequest;
+
+  /// Markers reales del ride activo (pickup/destino), vacío por
+  /// defecto para no afectar a Home. La posición propia del Driver
+  /// sigue representándose exclusivamente con el punto azul nativo
+  /// (`myLocationEnabled`), nunca con un Marker propio aquí.
+  final Set<Marker> markers;
 
   static const double initialZoom = 16.5;
 
@@ -212,13 +228,13 @@ class _DriverHomeMapState extends State<DriverHomeMap> {
 
     _lastAppliedCameraRequestId = request.id;
 
-    _animateTo(controller, request.target, request.zoom);
+    _animateTo(controller, request);
   }
 
-  void _animateTo(GoogleMapController controller, LatLng target, double zoom) {
+  void _animateTo(GoogleMapController controller, DriverMapCameraRequest request) {
     unawaited(
       controller
-          .animateCamera(CameraUpdate.newLatLngZoom(target, zoom))
+          .animateCamera(_cameraUpdateFor(request))
           .catchError((Object error, StackTrace stackTrace) {
             // Carrera propia del plugin: el controller pudo
             // invalidarse en el lado nativo entre el chequeo de
@@ -228,6 +244,46 @@ class _DriverHomeMapState extends State<DriverHomeMap> {
             // sin manejar.
             debugPrint('DRIVER MAP - animateCamera tardío ignorado: $error');
           }),
+    );
+  }
+
+  /// Centrar+zoom fijo (comportamiento original) cuando solo hay un
+  /// punto, o encuadrar bounds cuando además hay [secondaryTarget]
+  /// (por ejemplo Driver + pickup real durante DRIVER_ASSIGNED /
+  /// DRIVER_ARRIVING). Si ambos puntos son prácticamente el mismo
+  /// (Driver ya está en el pickup), evita un bounds degenerado y cae
+  /// también a centrar+zoom.
+  CameraUpdate _cameraUpdateFor(DriverMapCameraRequest request) {
+    final secondary = request.secondaryTarget;
+
+    if (secondary == null) {
+      return CameraUpdate.newLatLngZoom(request.target, request.zoom);
+    }
+
+    const sameSpotTolerance = 0.0001;
+
+    final sameSpot =
+        (request.target.latitude - secondary.latitude).abs() <
+            sameSpotTolerance &&
+        (request.target.longitude - secondary.longitude).abs() <
+            sameSpotTolerance;
+
+    if (sameSpot) {
+      return CameraUpdate.newLatLngZoom(request.target, request.zoom);
+    }
+
+    return CameraUpdate.newLatLngBounds(
+      LatLngBounds(
+        southwest: LatLng(
+          math.min(request.target.latitude, secondary.latitude),
+          math.min(request.target.longitude, secondary.longitude),
+        ),
+        northeast: LatLng(
+          math.max(request.target.latitude, secondary.latitude),
+          math.max(request.target.longitude, secondary.longitude),
+        ),
+      ),
+      64,
     );
   }
 
@@ -244,11 +300,11 @@ class _DriverHomeMapState extends State<DriverHomeMap> {
     /*
      * Igual que Passenger: la ubicación propia se representa con el
      * punto azul nativo de Google Maps (myLocationEnabled), NO con
-     * un Marker propio. `markers` queda vacío por ahora, pero el
-     * campo/infraestructura se conserva para pins reales futuros
-     * (pickup del pasajero, destino), sin representar al Driver.
+     * un Marker propio. `widget.markers` es vacío por defecto (Home)
+     * y solo lleva pins reales (pickup/destino) cuando el padre los
+     * provee, como hace la pantalla de ride activo.
      */
-    const markers = <Marker>{};
+    final markers = widget.markers;
 
     final resolved = DriverHomeMapResolved(
       target: target,

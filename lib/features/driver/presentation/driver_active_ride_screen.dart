@@ -6,17 +6,33 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:go_router/go_router.dart';
+import 'package:google_maps_flutter/google_maps_flutter.dart'
+    show BitmapDescriptor, LatLng, Marker, MarkerId;
 
+import '../../../core/theme/driver_palette.dart';
 import '../data/driver_operations_repository.dart';
 import '../data/driver_rides_repository.dart';
 import '../domain/driver_active_ride.dart';
+import '../domain/driver_assigned_passenger.dart';
 import '../domain/driver_ride_completion.dart';
+import 'driver_home_map.dart';
 
 class _DriverLocationFailure implements Exception {
   const _DriverLocationFailure(this.message);
 
   final String message;
 }
+
+typedef DriverActiveRidePositionFetcher =
+    Future<Position> Function({required bool requestPermission});
+
+/// Punto de inyección mínimo para pruebas, igual que
+/// `driverHomeGpsFetcherOverride` en Home: reemplaza la obtención
+/// real de GPS sin acoplar la pantalla a Geolocator dentro de los
+/// tests. Nombre distinto a propósito para evitar cualquier colisión
+/// si algún test llegara a importar ambas pantallas a la vez.
+@visibleForTesting
+DriverActiveRidePositionFetcher? driverActiveRideGpsFetcherOverride;
 
 class DriverActiveRideScreen extends ConsumerStatefulWidget {
   const DriverActiveRideScreen({super.key});
@@ -41,6 +57,28 @@ class _DriverActiveRideScreenState
 
   Timer? _rideTimer;
   Timer? _activityTimer;
+
+  /// Última posición real conocida del propio Driver, solo para
+  /// representarla en el mapa del ride activo (punto azul nativo) y
+  /// para encuadrar la cámara junto al pickup. Nunca se fabrica: solo
+  /// se llena cuando el GPS real responde.
+  Position? _driverPosition;
+
+  /// `true` en cuanto ya se emitió el encuadre inicial Driver+pickup,
+  /// para no reencuadrar la cámara en cada poll/heartbeat.
+  bool _cameraFramed = false;
+
+  DriverMapCameraRequest? _cameraRequest;
+  int _cameraRequestSequence = 0;
+
+  @visibleForTesting
+  Position? get debugDriverPosition => _driverPosition;
+
+  @visibleForTesting
+  DriverMapCameraRequest? get debugCameraRequest => _cameraRequest;
+
+  @visibleForTesting
+  DriverActiveRide? get debugRide => _ride;
 
   @override
   void initState() {
@@ -75,7 +113,19 @@ class _DriverActiveRideScreenState
     });
   }
 
-  Future<Position> _getDriverPosition({required bool requestPermission}) async {
+  Future<Position> _getDriverPosition({required bool requestPermission}) {
+    final override = driverActiveRideGpsFetcherOverride;
+
+    if (override != null) {
+      return override(requestPermission: requestPermission);
+    }
+
+    return _getDriverPositionFromDevice(requestPermission: requestPermission);
+  }
+
+  Future<Position> _getDriverPositionFromDevice({
+    required bool requestPermission,
+  }) async {
     final serviceEnabled = await Geolocator.isLocationServiceEnabled();
 
     if (!serviceEnabled) {
@@ -122,6 +172,14 @@ class _DriverActiveRideScreenState
     final position = await _getDriverPosition(
       requestPermission: requestPermission,
     );
+
+    if (mounted) {
+      setState(() {
+        _driverPosition = position;
+      });
+
+      _maybeFrameCamera();
+    }
 
     await ref
         .read(driverOperationsRepositoryProvider)
@@ -218,6 +276,8 @@ class _DriverActiveRideScreenState
         _error = null;
         _loading = false;
       });
+
+      _maybeFrameCamera();
     } on DioException catch (error) {
       debugPrint(
         'DRIVER ACTIVE LOAD ERROR '
@@ -245,6 +305,81 @@ class _DriverActiveRideScreenState
         _loading = false;
       });
     }
+  }
+
+  /// Encuadra la cámara UNA sola vez por instancia de esta pantalla
+  /// (Driver + pickup real), solo mientras el estado siga siendo
+  /// DRIVER_ASSIGNED/DRIVER_ARRIVING y solo cuando ya tenemos ambos
+  /// puntos reales. No vuelve a dispararse en cada poll de 3s ni en
+  /// cada heartbeat de 10s: por eso el guard `_cameraFramed`.
+  void _maybeFrameCamera() {
+    if (_cameraFramed || !mounted) {
+      return;
+    }
+
+    final ride = _ride;
+    final position = _driverPosition;
+
+    if (ride == null || position == null) {
+      return;
+    }
+
+    if (ride.status != 'DRIVER_ASSIGNED' && ride.status != 'DRIVER_ARRIVING') {
+      return;
+    }
+
+    final originLatitude = ride.originLatitude;
+    final originLongitude = ride.originLongitude;
+
+    if (originLatitude == null || originLongitude == null) {
+      return;
+    }
+
+    _cameraFramed = true;
+
+    setState(() {
+      _cameraRequest = DriverMapCameraRequest(
+        id: ++_cameraRequestSequence,
+        target: LatLng(position.latitude, position.longitude),
+        secondaryTarget: LatLng(originLatitude, originLongitude),
+      );
+    });
+  }
+
+  Set<Marker> _rideMarkers(DriverActiveRide ride) {
+    final markers = <Marker>{};
+
+    final originLatitude = ride.originLatitude;
+    final originLongitude = ride.originLongitude;
+
+    if (originLatitude != null && originLongitude != null) {
+      markers.add(
+        Marker(
+          markerId: const MarkerId('active-ride-origin'),
+          position: LatLng(originLatitude, originLongitude),
+          icon: BitmapDescriptor.defaultMarkerWithHue(
+            BitmapDescriptor.hueGreen,
+          ),
+        ),
+      );
+    }
+
+    final destinationLatitude = ride.destinationLatitude;
+    final destinationLongitude = ride.destinationLongitude;
+
+    if (destinationLatitude != null && destinationLongitude != null) {
+      markers.add(
+        Marker(
+          markerId: const MarkerId('active-ride-destination'),
+          position: LatLng(destinationLatitude, destinationLongitude),
+          icon: BitmapDescriptor.defaultMarkerWithHue(
+            BitmapDescriptor.hueOrange,
+          ),
+        ),
+      );
+    }
+
+    return markers;
   }
 
   Future<void> _startArrival() async {
@@ -342,19 +477,9 @@ class _DriverActiveRideScreenState
         return;
       }
 
-      String message = 'No se pudo registrar la llegada.';
-
-      if (error.response?.statusCode == 400) {
-        message =
-            'El GPS no es válido o estás '
-            'demasiado lejos del pasajero.';
-      } else if (error.response == null) {
-        message = 'No se pudo conectar con TukiTuki.';
-      }
-
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(SnackBar(content: Text(message)));
+      ).showSnackBar(SnackBar(content: Text(_arriveErrorMessage(error))));
     } finally {
       if (mounted) {
         setState(() {
@@ -362,6 +487,36 @@ class _DriverActiveRideScreenState
         });
       }
     }
+  }
+
+  /// Mejora mínima y acotada: si Backend devuelve la distancia real
+  /// en el 400 (`distanceToOriginMeters`/`maximumArrivalDistanceMeters`),
+  /// se usa para un mensaje concreto en vez del genérico. Sin crear
+  /// una arquitectura de errores nueva: cualquier otro caso conserva
+  /// el mensaje que ya existía.
+  String _arriveErrorMessage(DioException error) {
+    if (error.response?.statusCode == 400) {
+      final data = error.response?.data;
+
+      final distance = data is Map ? data['distanceToOriginMeters'] : null;
+      final maxDistance = data is Map
+          ? data['maximumArrivalDistanceMeters']
+          : null;
+
+      if (distance is num && maxDistance is num) {
+        return 'Estás a ${distance.round()} m del pasajero '
+            '(máximo ${maxDistance.round()} m).';
+      }
+
+      return 'El GPS no es válido o estás '
+          'demasiado lejos del pasajero.';
+    }
+
+    if (error.response == null) {
+      return 'No se pudo conectar con TukiTuki.';
+    }
+
+    return 'No se pudo registrar la llegada.';
   }
 
   Future<void> _startRide() async {
@@ -618,90 +773,7 @@ class _DriverActiveRideScreenState
     final completion = _completion;
 
     if (completion != null) {
-      return Scaffold(
-        appBar: AppBar(
-          automaticallyImplyLeading: false,
-          title: const Text('Viaje completado'),
-        ),
-        body: SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.all(24),
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                const Icon(Icons.check_circle, size: 100),
-
-                const SizedBox(height: 24),
-
-                const Text(
-                  '¡Viaje completado!',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(fontSize: 30, fontWeight: FontWeight.bold),
-                ),
-
-                const SizedBox(height: 20),
-
-                Text(
-                  'Tarifa final',
-                  textAlign: TextAlign.center,
-                  style: Theme.of(context).textTheme.titleLarge,
-                ),
-
-                const SizedBox(height: 8),
-
-                Text(
-                  'S/ ${completion.passengerAmountDue}',
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(
-                    fontSize: 42,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-
-                const SizedBox(height: 24),
-
-                Card(
-                  child: Padding(
-                    padding: const EdgeInsets.all(20),
-                    child: Column(
-                      children: [
-                        Text(
-                          'Método de pago: '
-                          '${completion.paymentMethod}',
-                        ),
-
-                        const SizedBox(height: 8),
-
-                        Text(
-                          'Estado del pago: '
-                          '${completion.paymentStatus}',
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-
-                const SizedBox(height: 24),
-
-                FilledButton.icon(
-                  onPressed: () {
-                    context.go(
-                      '/cash-payment/'
-                      '${completion.rideId}',
-                    );
-                  },
-                  icon: const Icon(Icons.payments),
-                  label: const Padding(
-                    padding: EdgeInsets.symmetric(vertical: 16),
-                    child: Text('Cobrar efectivo'),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-      );
+      return _buildCompletionScreen(completion);
     }
 
     if (ride == null) {
@@ -711,6 +783,101 @@ class _DriverActiveRideScreenState
       );
     }
 
+    if (ride.status == 'DRIVER_ASSIGNED' || ride.status == 'DRIVER_ARRIVING') {
+      return _buildAssignedOrArrivingScreen(ride);
+    }
+
+    return _buildLegacyRideScreen(ride);
+  }
+
+  Widget _buildCompletionScreen(DriverRideCompletion completion) {
+    return Scaffold(
+      appBar: AppBar(
+        automaticallyImplyLeading: false,
+        title: const Text('Viaje completado'),
+      ),
+      body: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              const Icon(Icons.check_circle, size: 100),
+
+              const SizedBox(height: 24),
+
+              const Text(
+                '¡Viaje completado!',
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 30, fontWeight: FontWeight.bold),
+              ),
+
+              const SizedBox(height: 20),
+
+              Text(
+                'Tarifa final',
+                textAlign: TextAlign.center,
+                style: Theme.of(context).textTheme.titleLarge,
+              ),
+
+              const SizedBox(height: 8),
+
+              Text(
+                'S/ ${completion.passengerAmountDue}',
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  fontSize: 42,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+
+              const SizedBox(height: 24),
+
+              Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(20),
+                  child: Column(
+                    children: [
+                      Text(
+                        'Método de pago: '
+                        '${completion.paymentMethod}',
+                      ),
+
+                      const SizedBox(height: 8),
+
+                      Text(
+                        'Estado del pago: '
+                        '${completion.paymentStatus}',
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+
+              const SizedBox(height: 24),
+
+              FilledButton.icon(
+                onPressed: () {
+                  context.go(
+                    '/cash-payment/'
+                    '${completion.rideId}',
+                  );
+                },
+                icon: const Icon(Icons.payments),
+                label: const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 16),
+                  child: Text('Cobrar efectivo'),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildLegacyRideScreen(DriverActiveRide ride) {
     return Scaffold(
       appBar: AppBar(
         automaticallyImplyLeading: false,
@@ -740,7 +907,7 @@ class _DriverActiveRideScreenState
               const SizedBox(height: 12),
 
               Text(
-                'S/ ${ride.estimatedFare}',
+                'S/ ${ride.displayFare}',
                 textAlign: TextAlign.center,
                 style: const TextStyle(
                   fontSize: 36,
@@ -774,26 +941,6 @@ class _DriverActiveRideScreenState
               ),
 
               const SizedBox(height: 32),
-
-              if (ride.status == 'DRIVER_ASSIGNED')
-                FilledButton.icon(
-                  onPressed: _changingStatus ? null : _startArrival,
-                  icon: const Icon(Icons.two_wheeler),
-                  label: const Padding(
-                    padding: EdgeInsets.symmetric(vertical: 16),
-                    child: Text('Ir a recoger al pasajero'),
-                  ),
-                ),
-
-              if (ride.status == 'DRIVER_ARRIVING')
-                FilledButton.icon(
-                  onPressed: _changingStatus ? null : _arrive,
-                  icon: const Icon(Icons.location_on),
-                  label: const Padding(
-                    padding: EdgeInsets.symmetric(vertical: 16),
-                    child: Text('Ya llegué'),
-                  ),
-                ),
 
               if (ride.status == 'DRIVER_ARRIVED') ...[
                 Card(
@@ -906,6 +1053,465 @@ class _DriverActiveRideScreenState
               ],
             ],
           ),
+        ),
+      ),
+    );
+  }
+
+  // ---------------------------------------------------------------------
+  // DRIVER_ASSIGNED / DRIVER_ARRIVING — Checkpoint A
+  // ---------------------------------------------------------------------
+
+  Widget _buildAssignedOrArrivingScreen(DriverActiveRide ride) {
+    final isArriving = ride.status == 'DRIVER_ARRIVING';
+    final distanceLabel = _formatDistanceToOrigin(ride.distanceToOriginMeters);
+
+    return Scaffold(
+      backgroundColor: DriverPalette.cream,
+      appBar: AppBar(
+        backgroundColor: DriverPalette.cream,
+        elevation: 0,
+        automaticallyImplyLeading: false,
+        foregroundColor: DriverPalette.greenPrimary,
+        title: const Text(
+          'Tu viaje',
+          style: TextStyle(fontWeight: FontWeight.w800),
+        ),
+      ),
+      body: SafeArea(
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            final mapHeight = (constraints.maxHeight * 0.36).clamp(
+              180.0,
+              320.0,
+            );
+
+            return Column(
+              children: [
+                SizedBox(
+                  height: mapHeight,
+                  width: double.infinity,
+                  child: DriverHomeMap(
+                    position: _driverPosition,
+                    myLocationEnabled: _driverPosition != null,
+                    cameraRequest: _cameraRequest,
+                    markers: _rideMarkers(ride),
+                  ),
+                ),
+                Expanded(
+                  child: Container(
+                    width: double.infinity,
+                    decoration: const BoxDecoration(
+                      color: DriverPalette.cream,
+                      borderRadius: BorderRadius.vertical(
+                        top: Radius.circular(24),
+                      ),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black26,
+                          blurRadius: 14,
+                          offset: Offset(0, -3),
+                        ),
+                      ],
+                    ),
+                    child: SingleChildScrollView(
+                      padding: const EdgeInsets.fromLTRB(20, 22, 20, 24),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          _RideStatusHeader(isArriving: isArriving),
+
+                          const SizedBox(height: 18),
+
+                          _FareCard(fare: ride.displayFare),
+
+                          const SizedBox(height: 14),
+
+                          _PassengerCard(passenger: ride.passenger),
+
+                          const SizedBox(height: 14),
+
+                          _RouteCard(
+                            originAddress: ride.originAddress,
+                            destinationAddress: ride.destinationAddress,
+                          ),
+
+                          if (distanceLabel != null) ...[
+                            const SizedBox(height: 12),
+                            _DistanceChip(label: distanceLabel),
+                          ],
+
+                          const SizedBox(height: 22),
+
+                          FilledButton.icon(
+                            onPressed: _changingStatus
+                                ? null
+                                : (isArriving ? _arrive : _startArrival),
+                            style: FilledButton.styleFrom(
+                              backgroundColor: DriverPalette.greenPrimary,
+                            ),
+                            icon: _changingStatus
+                                ? const SizedBox(
+                                    width: 20,
+                                    height: 20,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                      color: Colors.white,
+                                    ),
+                                  )
+                                : Icon(
+                                    isArriving
+                                        ? Icons.location_on
+                                        : Icons.two_wheeler,
+                                  ),
+                            label: Padding(
+                              padding: const EdgeInsets.symmetric(
+                                vertical: 16,
+                              ),
+                              child: Text(
+                                _changingStatus
+                                    ? 'Actualizando...'
+                                    : isArriving
+                                        ? 'Llegué al punto de recojo'
+                                        : 'Ir a recoger al pasajero',
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            );
+          },
+        ),
+      ),
+    );
+  }
+}
+
+/// `< 1000 m`: metros redondeados. `>= 1000 m`: km con 1 decimal.
+/// Exactamente 0 (o cualquier redondeo <= 0): "En el punto de
+/// recojo", de forma determinista y sin inventar un valor distinto
+/// al que Backend calculó. `null`: no se muestra nada (sin ETA ni
+/// distancia inventada).
+String? _formatDistanceToOrigin(num? meters) {
+  if (meters == null) {
+    return null;
+  }
+
+  final rounded = meters.round();
+
+  if (rounded <= 0) {
+    return 'En el punto de recojo';
+  }
+
+  if (rounded < 1000) {
+    return '$rounded m al recojo';
+  }
+
+  final kilometers = rounded / 1000;
+
+  return '${kilometers.toStringAsFixed(1)} km al recojo';
+}
+
+class _RideStatusHeader extends StatelessWidget {
+  const _RideStatusHeader({required this.isArriving});
+
+  final bool isArriving;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        Container(
+          width: 56,
+          height: 56,
+          decoration: BoxDecoration(
+            color: DriverPalette.amber.withValues(alpha: 0.18),
+            shape: BoxShape.circle,
+          ),
+          child: Icon(
+            isArriving ? Icons.two_wheeler : Icons.person_pin_circle,
+            color: DriverPalette.orangeDeep,
+            size: 30,
+          ),
+        ),
+        const SizedBox(height: 14),
+        Text(
+          isArriving ? 'En camino al pasajero' : 'Pasajero asignado',
+          textAlign: TextAlign.center,
+          style: const TextStyle(
+            fontSize: 21,
+            fontWeight: FontWeight.w800,
+            color: DriverPalette.greenPrimary,
+          ),
+        ),
+        const SizedBox(height: 6),
+        Text(
+          isArriving
+              ? 'Sigue la ubicación del punto de recojo.'
+              : 'Dirígete al punto de recojo',
+          textAlign: TextAlign.center,
+          style: const TextStyle(color: DriverPalette.brown),
+        ),
+      ],
+    );
+  }
+}
+
+class _FareCard extends StatelessWidget {
+  const _FareCard({required this.fare});
+
+  final String fare;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(vertical: 16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Column(
+        children: [
+          const Text(
+            'TARIFA ACORDADA',
+            style: TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w700,
+              letterSpacing: 0.6,
+              color: DriverPalette.brown,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            'S/ $fare',
+            style: const TextStyle(
+              fontSize: 32,
+              fontWeight: FontWeight.w800,
+              color: DriverPalette.greenPrimary,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _PassengerCard extends StatelessWidget {
+  const _PassengerCard({required this.passenger});
+
+  final AssignedPassenger? passenger;
+
+  @override
+  Widget build(BuildContext context) {
+    final currentPassenger = passenger;
+
+    if (currentPassenger == null) {
+      return Container(
+        width: double.infinity,
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(16),
+        ),
+        child: const Row(
+          children: [
+            Icon(Icons.person_outline, color: DriverPalette.brown),
+            SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                'Información del pasajero no disponible',
+                style: TextStyle(color: DriverPalette.brown),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Row(
+        children: [
+          _PassengerAvatar(passenger: currentPassenger),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  currentPassenger.firstName,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontSize: 17,
+                    fontWeight: FontWeight.w700,
+                    color: DriverPalette.greenPrimary,
+                  ),
+                ),
+                if (currentPassenger.hasRating) ...[
+                  const SizedBox(height: 4),
+                  Text(
+                    '⭐ ${_formatRatingAverage(currentPassenger.ratingAverage)} '
+                    '· ${currentPassenger.ratingCount} calificaciones',
+                    style: const TextStyle(
+                      fontSize: 13,
+                      color: DriverPalette.brown,
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+String _formatRatingAverage(String raw) {
+  final value = double.tryParse(raw);
+
+  return value == null ? raw : value.toStringAsFixed(1);
+}
+
+class _PassengerAvatar extends StatelessWidget {
+  const _PassengerAvatar({required this.passenger});
+
+  final AssignedPassenger passenger;
+
+  @override
+  Widget build(BuildContext context) {
+    final photoUrl = passenger.photoUrl;
+
+    if (photoUrl == null || photoUrl.isEmpty) {
+      return _InitialAvatar(firstName: passenger.firstName);
+    }
+
+    return ClipOval(
+      child: Image.network(
+        photoUrl,
+        width: 48,
+        height: 48,
+        fit: BoxFit.cover,
+        errorBuilder: (context, error, stackTrace) {
+          return _InitialAvatar(firstName: passenger.firstName);
+        },
+      ),
+    );
+  }
+}
+
+class _InitialAvatar extends StatelessWidget {
+  const _InitialAvatar({required this.firstName});
+
+  final String firstName;
+
+  @override
+  Widget build(BuildContext context) {
+    final initial = firstName.isNotEmpty ? firstName[0].toUpperCase() : '?';
+
+    return Container(
+      width: 48,
+      height: 48,
+      decoration: const BoxDecoration(
+        color: DriverPalette.greenPrimary,
+        shape: BoxShape.circle,
+      ),
+      alignment: Alignment.center,
+      child: Text(
+        initial,
+        style: const TextStyle(
+          color: DriverPalette.amber,
+          fontSize: 18,
+          fontWeight: FontWeight.w800,
+        ),
+      ),
+    );
+  }
+}
+
+class _RouteCard extends StatelessWidget {
+  const _RouteCard({
+    required this.originAddress,
+    required this.destinationAddress,
+  });
+
+  final String originAddress;
+  final String destinationAddress;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Column(
+        children: [
+          ListTile(
+            dense: true,
+            leading: const Icon(
+              Icons.my_location,
+              color: DriverPalette.greenAvailable,
+            ),
+            title: const Text('Punto de recojo'),
+            subtitle: Text(originAddress),
+          ),
+          const Divider(height: 1),
+          ListTile(
+            dense: true,
+            leading: const Icon(Icons.location_on, color: DriverPalette.orange),
+            title: const Text('Destino'),
+            subtitle: Text(destinationAddress),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _DistanceChip extends StatelessWidget {
+  const _DistanceChip({required this.label});
+
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        decoration: BoxDecoration(
+          color: DriverPalette.greenAvailable.withValues(alpha: 0.12),
+          borderRadius: BorderRadius.circular(999),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(
+              Icons.social_distance,
+              size: 14,
+              color: DriverPalette.greenAvailable,
+            ),
+            const SizedBox(width: 6),
+            Text(
+              label,
+              style: const TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                color: DriverPalette.greenAvailable,
+              ),
+            ),
+          ],
         ),
       ),
     );

@@ -245,6 +245,42 @@ void main() {
     });
 
     testWidgets(
+      'los markers reales (pickup/destino) provistos por el padre se exponen tal cual',
+      (tester) async {
+        DriverHomeMapResolved? resolved;
+
+        driverHomeMapBuilderOverride = (context, config) {
+          resolved = config;
+          return const SizedBox.shrink();
+        };
+
+        final rideMarkers = <Marker>{
+          const Marker(
+            markerId: MarkerId('active-ride-origin'),
+            position: LatLng(-6.4877, -76.3599),
+          ),
+          const Marker(
+            markerId: MarkerId('active-ride-destination'),
+            position: LatLng(-6.4812, -76.3655),
+          ),
+        };
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: DriverHomeMap(
+              position: position(),
+              myLocationEnabled: true,
+              markers: rideMarkers,
+            ),
+          ),
+        );
+
+        expect(resolved!.markers, rideMarkers);
+        expect(resolved!.markers, hasLength(2));
+      },
+    );
+
+    testWidgets(
       'G: el campo markers sigue existiendo para pins reales futuros (pickup/destino)',
       (tester) async {
         // No se agrega todavía ningún caller que lo llene (fuera de
@@ -335,6 +371,33 @@ void main() {
       const b = DriverMapCameraRequest(id: 2, target: LatLng(-12.05, -77.05));
 
       expect(a, isNot(b));
+    });
+
+    test('secondaryTarget distinto (mismo id/target) NO son ==', () {
+      const a = DriverMapCameraRequest(
+        id: 1,
+        target: LatLng(-12.05, -77.05),
+        secondaryTarget: LatLng(-12.06, -77.06),
+      );
+      const b = DriverMapCameraRequest(id: 1, target: LatLng(-12.05, -77.05));
+
+      expect(a, isNot(b));
+    });
+
+    test('mismo secondaryTarget también entra en la igualdad', () {
+      const a = DriverMapCameraRequest(
+        id: 1,
+        target: LatLng(-12.05, -77.05),
+        secondaryTarget: LatLng(-12.06, -77.06),
+      );
+      const b = DriverMapCameraRequest(
+        id: 1,
+        target: LatLng(-12.05, -77.05),
+        secondaryTarget: LatLng(-12.06, -77.06),
+      );
+
+      expect(a, b);
+      expect(a.hashCode, b.hashCode);
     });
   });
 
@@ -471,6 +534,27 @@ void main() {
               cameraRequest: const DriverMapCameraRequest(
                 id: 2,
                 target: LatLng(-8.1, -79.0),
+              ),
+            ),
+          ),
+        );
+
+        expect(tester.takeException(), isNull);
+      },
+    );
+
+    testWidgets(
+      'un cameraRequest con secondaryTarget (bounds Driver+pickup) tampoco lanza excepción',
+      (tester) async {
+        await tester.pumpWidget(
+          MaterialApp(
+            home: DriverHomeMap(
+              position: position(),
+              myLocationEnabled: true,
+              cameraRequest: const DriverMapCameraRequest(
+                id: 1,
+                target: LatLng(-12.05, -77.05),
+                secondaryTarget: LatLng(-12.06, -77.06),
               ),
             ),
           ),
