@@ -2,6 +2,8 @@ import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/network/api_client.dart';
+import '../domain/driver_daily_stats.dart';
+import '../domain/driver_operational_state.dart';
 
 final driverOperationsRepositoryProvider = Provider<DriverOperationsRepository>(
   (ref) {
@@ -14,36 +16,50 @@ class DriverOperationsRepository {
 
   final Dio _dio;
 
-  Future<String> goOnline() async {
+  Future<DriverOperationalState> goOnline() async {
     final response = await _dio.patch<Map<String, dynamic>>(
       'drivers/me/operational-status/online',
     );
 
-    return _readStatus(response.data);
+    return _readState(response.data);
   }
 
-  Future<String> goOffline() async {
+  Future<DriverOperationalState> goOffline() async {
     final response = await _dio.patch<Map<String, dynamic>>(
       'drivers/me/operational-status/offline',
     );
 
-    return _readStatus(response.data);
+    return _readState(response.data);
   }
 
-  Future<String> getStatus() async {
+  Future<DriverOperationalState> getStatus() async {
     final response = await _dio.get<Map<String, dynamic>>(
       'drivers/me/operational-status',
     );
 
-    return _readStatus(response.data);
+    return _readState(response.data);
   }
 
-  Future<String> heartbeat() async {
+  Future<DriverOperationalState> heartbeat() async {
     final response = await _dio.post<Map<String, dynamic>>(
       'drivers/me/operational-status/heartbeat',
     );
 
-    return _readStatus(response.data);
+    return _readState(response.data);
+  }
+
+  Future<DriverDailyStats> getDailyStats() async {
+    final response = await _dio.get<Map<String, dynamic>>(
+      'drivers/me/stats/daily',
+    );
+
+    final data = response.data;
+
+    if (data == null) {
+      throw Exception('El backend devolvió una respuesta vacía.');
+    }
+
+    return DriverDailyStats.fromJson(data);
   }
 
   Future<void> updateLocation({
@@ -76,7 +92,16 @@ class DriverOperationsRepository {
     await _dio.put<Map<String, dynamic>>('drivers/me/location', data: data);
   }
 
-  String _readStatus(Map<String, dynamic>? data) {
-    return data?['status']?.toString() ?? 'UNKNOWN';
+  /// Parsing defensivo: si Backend solo devuelve `status`, el resto
+  /// de campos queda en null. Si devuelve el objeto completo
+  /// (id, connectedAt, lastSeenAt, ...), se conserva todo.
+  DriverOperationalState _readState(Map<String, dynamic>? data) {
+    if (data == null) {
+      return const DriverOperationalState(
+        status: DriverOperationalStatus.unknown,
+      );
+    }
+
+    return DriverOperationalState.fromJson(data);
   }
 }

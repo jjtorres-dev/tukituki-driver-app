@@ -2,6 +2,7 @@ import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/network/api_client.dart';
+import '../domain/driver_pending_proposal.dart';
 import '../domain/driver_ride_offer.dart';
 
 final driverOffersRepositoryProvider = Provider<DriverOffersRepository>((ref) {
@@ -91,5 +92,30 @@ class DriverOffersRepository {
 
   Future<void> rejectOffer(String offerId) async {
     await _dio.post<void>('drivers/me/ride-offers/$offerId/reject');
+  }
+
+  /// Propuestas PROPOSED del conductor, pendientes de que el
+  /// pasajero decida. Es la fuente de verdad recuperable
+  /// después de un restart de la app (0..N elementos).
+  Future<List<DriverPendingProposal>> getPendingProposals() async {
+    final response = await _dio.get<List<dynamic>>(
+      'drivers/me/ride-offers/proposals/pending',
+    );
+
+    final data = response.data ?? const <dynamic>[];
+
+    final proposals = <DriverPendingProposal>[];
+
+    for (final item in data) {
+      if (item is! Map) {
+        continue;
+      }
+
+      proposals.add(
+        DriverPendingProposal.fromJson(Map<String, dynamic>.from(item)),
+      );
+    }
+
+    return proposals;
   }
 }
