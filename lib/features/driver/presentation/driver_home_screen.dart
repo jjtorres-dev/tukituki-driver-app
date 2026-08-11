@@ -5,8 +5,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:go_router/go_router.dart';
+import 'package:google_maps_flutter/google_maps_flutter.dart' show LatLng;
 
 import '../../../core/storage/secure_storage.dart';
+import '../../../core/theme/driver_palette.dart';
 import '../../auth/data/auth_repository.dart';
 import '../data/driver_offers_repository.dart';
 import '../data/driver_operations_repository.dart';
@@ -16,6 +18,7 @@ import '../domain/driver_operational_state.dart';
 import '../domain/driver_pending_proposal.dart';
 import '../domain/driver_ride_offer.dart';
 import 'driver_counter_offer_dialog.dart';
+import 'driver_home_map.dart';
 
 /// Estado explícito del Home, independiente del bool `_online`
 /// que ya no alcanza para representar todos los casos reales
@@ -58,6 +61,14 @@ typedef DriverPositionFetcher =
 @visibleForTesting
 DriverPositionFetcher? driverHomeGpsFetcherOverride;
 
+typedef DriverLocationAccuracyFetcher =
+    Future<LocationAccuracyStatus> Function();
+
+/// Punto de inyección mínimo para pruebas del diagnóstico
+/// precise/reduced, con el mismo criterio que [driverHomeGpsFetcherOverride].
+@visibleForTesting
+DriverLocationAccuracyFetcher? driverHomeLocationAccuracyFetcherOverride;
+
 class DriverHomeScreen extends ConsumerStatefulWidget {
   const DriverHomeScreen({super.key});
 
@@ -83,7 +94,6 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
 
   DriverOperationalState? _operationalState;
   DriverDailyStats? _dailyStats;
-  String? _statsError;
   String? _errorMessage;
 
   DriverRideOffer? _offer;
@@ -94,8 +104,27 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
   DateTime? _lastPositionAt;
   DriverGpsStatus _gpsStatus = DriverGpsStatus.unknown;
 
+  /// Diagnóstico precise/reduced de Android/iOS. Solo informativo:
+  /// no bloquea ni cambia el flujo de conexión/publicación.
+  LocationAccuracyStatus _locationAccuracyStatus =
+      LocationAccuracyStatus.unknown;
+
+  bool _recentering = false;
+
+  /// Pedido de cámara declarativo vigente para `DriverHomeMap`. Home
+  /// NUNCA guarda un `GoogleMapController`: solo emite pedidos con un
+  /// `id` creciente (conectar/reconectar, tap en recentrar) y es el
+  /// propio `DriverHomeMap` quien decide cómo y cuándo ejecutarlos
+  /// con SU controller, siempre vivo mientras exista esa instancia.
+  DriverMapCameraRequest? _cameraRequest;
+  int _cameraRequestSequence = 0;
+
   Timer? _heartbeatTimer;
   Timer? _offersTimer;
+
+  /// Solo refresca la UI (duración "en línea"). No es fuente de
+  /// verdad: `connectedAt` de Backend sigue siendo la autoridad.
+  Timer? _connectedAtTimer;
 
   /// Expuesto para pruebas y para el próximo checkpoint (rediseño
   /// visual), que mostrará connectedAt/lastSeenAt en el Home.
@@ -116,6 +145,31 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
 
   @visibleForTesting
   DriverGpsStatus get debugGpsStatus => _effectiveGpsStatus;
+
+  /// El estado GPS "problemático" (permissionDenied, deniedForever,
+  /// serviceDisabled) solo se alcanza en un dispositivo real, a
+  /// través de la excepción privada de Geolocator. Este setter
+  /// mínimo permite ejercitar esos casos en tests sin exponer ni
+  /// alterar esa lógica interna.
+  @visibleForTesting
+  void debugSetGpsStatus(DriverGpsStatus value) {
+    setState(() {
+      _gpsStatus = value;
+    });
+  }
+
+  @visibleForTesting
+  LocationAccuracyStatus get debugLocationAccuracyStatus =>
+      _locationAccuracyStatus;
+
+  @visibleForTesting
+  bool get debugMyLocationSafe => _myLocationSafe;
+
+  /// Último pedido de cámara emitido hacia `DriverHomeMap`. Expuesto
+  /// para que los tests verifiquen la arquitectura declarativa sin
+  /// necesitar (ni poder) acceder a un `GoogleMapController` real.
+  @visibleForTesting
+  DriverMapCameraRequest? get debugCameraRequest => _cameraRequest;
 
   @override
   void initState() {
@@ -259,13 +313,22 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
          * Redis GEO. No solicitamos nuevamente permiso aquí:
          * solo comprobamos el permiso existente.
          */
-        await _refreshDriverPresence();
+        final publishedLocation = await _refreshDriverPresence();
 
         if (!mounted) {
           return false;
         }
 
         if (_status == DriverHomeStatus.available) {
+          // Primera vez que el mapa se activa en esta apertura de
+          // Home (restore mientras ya estaba AVAILABLE): lo centramos
+          // una vez, igual que un connect explícito.
+          final restoredPosition = _lastPosition;
+
+          if (publishedLocation && restoredPosition != null) {
+            _requestCameraCenter(restoredPosition);
+          }
+
           _startOnlineWorkers();
 
           await _loadOffers();
@@ -406,18 +469,11 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
 
       setState(() {
         _dailyStats = stats;
-        _statsError = null;
       });
     } catch (error) {
+      // Las stats fallidas quedan como "—" en el sheet (sección 18):
+      // no se muestra un S/ 0.00 falso ni se rompe Home.
       debugPrint('DRIVER STATS ERROR: $error');
-
-      if (!mounted) {
-        return;
-      }
-
-      setState(() {
-        _statsError = 'No se pudieron cargar tus estadísticas de hoy.';
-      });
     } finally {
       _loadingStats = false;
     }
@@ -524,6 +580,14 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
       }
 
       if (_status == DriverHomeStatus.available) {
+        /*
+         * Centra la cámara UNA VEZ por conexión (incluida una
+         * reconexión tras haber estado OFFLINE con el mapa ya vivo).
+         * No se repite en cada heartbeat: _goOnline() solo corre acá,
+         * nunca en el timer periódico.
+         */
+        _requestCameraCenter(initialPosition);
+
         /*
          * Los workers ya NO vuelven a ejecutar otro refresh
          * inmediatamente. Evitamos el doble heartbeat/location
@@ -658,8 +722,6 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
         _offer = null;
         _pendingProposals = const [];
         _locationStatusMessage = null;
-        _lastPosition = null;
-        _lastPositionAt = null;
         _gpsStatus = DriverGpsStatus.unknown;
       });
     } on DioException catch (error) {
@@ -720,6 +782,24 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
     }
 
     return _getDriverPositionFromDevice(requestPermission: requestPermission);
+  }
+
+  /// Diagnóstico precise/reduced. Puramente informativo: un fallo aquí
+  /// nunca debe afectar el flujo real de ubicación/publicación.
+  Future<LocationAccuracyStatus> _getLocationAccuracyStatus() async {
+    try {
+      final override = driverHomeLocationAccuracyFetcherOverride;
+
+      if (override != null) {
+        return await override();
+      }
+
+      return await Geolocator.getLocationAccuracy();
+    } catch (error) {
+      debugPrint('DRIVER LOCATION ACCURACY - no se pudo consultar: $error');
+
+      return LocationAccuracyStatus.unknown;
+    }
   }
 
   Future<Position> _getDriverPositionFromDevice({
@@ -818,6 +898,25 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
       _lastPositionAt = DateTime.now();
       _gpsStatus = DriverGpsStatus.active;
     });
+
+    _refreshLocationAccuracyStatus();
+  }
+
+  /// Fire-and-forget a propósito: es puramente informativo y NUNCA
+  /// debe retrasar ni afectar el flujo real de ubicación/publicación
+  /// que la llama (heartbeat, goOnline, recenter).
+  void _refreshLocationAccuracyStatus() {
+    unawaited(
+      _getLocationAccuracyStatus().then((status) {
+        if (!mounted) {
+          return;
+        }
+
+        setState(() {
+          _locationAccuracyStatus = status;
+        });
+      }),
+    );
   }
 
   bool get _isPositionFresh {
@@ -865,14 +964,23 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
     _offersTimer = Timer.periodic(const Duration(seconds: 3), (_) {
       unawaited(_loadOffers());
     });
+
+    // Solo repinta la duración "en línea"; no vuelve a consultar Backend.
+    _connectedAtTimer = Timer.periodic(const Duration(minutes: 1), (_) {
+      if (mounted) {
+        setState(() {});
+      }
+    });
   }
 
   void _stopOnlineWorkers() {
     _heartbeatTimer?.cancel();
     _offersTimer?.cancel();
+    _connectedAtTimer?.cancel();
 
     _heartbeatTimer = null;
     _offersTimer = null;
+    _connectedAtTimer = null;
   }
 
   Future<bool> _refreshDriverPresence({Position? knownPosition}) async {
@@ -1455,7 +1563,13 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
       return;
     }
 
-    _loggingOut = true;
+    if (mounted) {
+      setState(() {
+        _loggingOut = true;
+      });
+    } else {
+      _loggingOut = true;
+    }
 
     _stopOnlineWorkers();
 
@@ -1469,7 +1583,13 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
 
     await ref.read(authRepositoryProvider).logout();
 
-    _loggingOut = false;
+    if (mounted) {
+      setState(() {
+        _loggingOut = false;
+      });
+    } else {
+      _loggingOut = false;
+    }
 
     if (!mounted) {
       return;
@@ -1500,261 +1620,170 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
     ).showSnackBar(SnackBar(content: Text(message)));
   }
 
+  /// Recenter manual, igual que Passenger: siempre pide una Position
+  /// nueva y fresca (nunca la cacheada en `_lastPosition`, nunca un
+  /// stream de "mejor" Position), y le pide a `DriverHomeMap` que
+  /// centre la cámara en esa misma Position que también queda
+  /// guardada en el estado. Nunca toca un `GoogleMapController`
+  /// directamente: eso es responsabilidad exclusiva de `DriverHomeMap`.
+  Future<void> _recenterMap() async {
+    if (_recentering) {
+      return;
+    }
+
+    setState(() {
+      _recentering = true;
+    });
+
+    try {
+      final position = await _getDriverPosition(requestPermission: false);
+
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _lastPosition = position;
+        _lastPositionAt = DateTime.now();
+        _gpsStatus = DriverGpsStatus.active;
+      });
+
+      _requestCameraCenter(position);
+
+      _refreshLocationAccuracyStatus();
+    } on _DriverLocationException catch (error) {
+      _showMessage(error.message);
+    } catch (error) {
+      debugPrint('DRIVER RECENTER - error: $error');
+      _showMessage('No se pudo obtener tu ubicación GPS.');
+    } finally {
+      if (mounted) {
+        setState(() {
+          _recentering = false;
+        });
+      }
+    }
+  }
+
+  /// Emite un pedido de cámara declarativo nuevo hacia `DriverHomeMap`
+  /// (conectar/reconectar o recentrado manual). `DriverHomeMap` decide
+  /// con SU controller —vivo mientras esa instancia exista— cómo y
+  /// cuándo aplicarlo; Home nunca guarda ni usa un
+  /// `GoogleMapController`.
+  void _requestCameraCenter(Position position) {
+    if (!mounted) {
+      return;
+    }
+
+    setState(() {
+      _cameraRequest = DriverMapCameraRequest(
+        id: ++_cameraRequestSequence,
+        target: LatLng(position.latitude, position.longitude),
+      );
+    });
+  }
+
+  Widget _buildRecenterButton() {
+    return Material(
+      key: const ValueKey('driver-home-recenter-button'),
+      color: DriverPalette.amber,
+      shape: const CircleBorder(),
+      elevation: 3,
+      shadowColor: Colors.black38,
+      child: InkWell(
+        customBorder: const CircleBorder(),
+        onTap: _recentering ? null : _recenterMap,
+        child: SizedBox(
+          width: 40,
+          height: 40,
+          child: _recentering
+              ? const Padding(
+                  padding: EdgeInsets.all(10),
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2.5,
+                    color: DriverPalette.greenPrimary,
+                  ),
+                )
+              : const Icon(
+                  Icons.my_location,
+                  color: DriverPalette.greenPrimary,
+                  size: 22,
+                ),
+        ),
+      ),
+    );
+  }
+
   // ---------------------------------------------------------------------
   // Build
   // ---------------------------------------------------------------------
 
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('TukiTuki Conductor'),
-        actions: [
-          IconButton(
-            onPressed: _status == DriverHomeStatus.restoring ? null : _logout,
-            icon: const Icon(Icons.logout),
-          ),
-        ],
-      ),
-      body: SafeArea(
-        child: Padding(padding: const EdgeInsets.all(24), child: _buildBody()),
-      ),
-    );
-  }
+  /// El botón custom de recentrado nunca se muestra OFFLINE: el mapa
+  /// vivo queda oculto detrás del overlay opaco y no tiene sentido
+  /// ofrecer recentrar algo que el conductor no puede ver.
+  bool get _showRecenterButton =>
+      _lastPosition != null && _status != DriverHomeStatus.offline;
 
-  Widget _buildBody() {
-    switch (_status) {
-      case DriverHomeStatus.restoring:
-        return _buildRestoring();
+  DriverHomeMapFallback get _mapFallback {
+    /*
+     * OFFLINE y sin un problema de GPS conocido: todavía no se
+     * intentó adquirir Position, así que "Obteniendo tu ubicación..."
+     * sería engañoso. Si el usuario ya pulsó Conectarme (_loading)
+     * sí estamos adquiriendo de verdad, y eso se refleja abajo.
+     * Si ya conocemos un problema real (permiso, servicio, etc.),
+     * seguimos mostrando ese motivo específico en vez del genérico.
+     */
+    if (_status == DriverHomeStatus.offline &&
+        !_loading &&
+        _gpsStatus == DriverGpsStatus.unknown) {
+      return DriverHomeMapFallback.offline;
+    }
 
-      case DriverHomeStatus.error:
-        return _buildError();
-
-      case DriverHomeStatus.busyRecovery:
-        return _buildBusyRecovery();
-
-      case DriverHomeStatus.offline:
-      case DriverHomeStatus.available:
-        return _offer != null ? _buildOffer(_offer!) : _buildStatus();
+    switch (_effectiveGpsStatus) {
+      case DriverGpsStatus.serviceDisabled:
+        return DriverHomeMapFallback.serviceDisabled;
+      case DriverGpsStatus.permissionDenied:
+        return DriverHomeMapFallback.permissionDenied;
+      case DriverGpsStatus.permissionDeniedForever:
+        return DriverHomeMapFallback.permissionDeniedForever;
+      case DriverGpsStatus.acquireError:
+        return DriverHomeMapFallback.acquireError;
+      case DriverGpsStatus.publishError:
+        return DriverHomeMapFallback.publishError;
+      case DriverGpsStatus.unknown:
+      case DriverGpsStatus.active:
+      case DriverGpsStatus.stale:
+        return DriverHomeMapFallback.acquiring;
     }
   }
 
-  Widget _buildRestoring() {
-    return const Center(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          CircularProgressIndicator(),
-          SizedBox(height: 20),
-          Text(
-            'Preparando tu jornada',
-            textAlign: TextAlign.center,
-            style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
-          ),
-          SizedBox(height: 8),
-          Text('Recuperando tu estado...', textAlign: TextAlign.center),
-        ],
-      ),
-    );
+  String get _grossAmountDisplay {
+    final stats = _dailyStats;
+    return stats != null ? 'S/ ${stats.grossAmount}' : '—';
   }
 
-  Widget _buildError() {
-    return Center(
-      child: SingleChildScrollView(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Icon(Icons.error_outline, size: 80),
-            const SizedBox(height: 20),
-            const Text(
-              'No pudimos recuperar tu estado',
-              textAlign: TextAlign.center,
-              style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
-            ),
-            const SizedBox(height: 12),
-            Text(
-              _errorMessage ?? 'Ocurrió un error inesperado.',
-              textAlign: TextAlign.center,
-            ),
-            const SizedBox(height: 28),
-            SizedBox(
-              width: double.infinity,
-              child: FilledButton(
-                onPressed: _restoreInFlight
-                    ? null
-                    : () => unawaited(_restoreState()),
-                child: const Padding(
-                  padding: EdgeInsets.symmetric(vertical: 16),
-                  child: Text('Reintentar'),
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
+  String get _completedRidesDisplay {
+    final stats = _dailyStats;
+    return stats != null ? '${stats.completedRides}' : '—';
   }
 
-  Widget _buildBusyRecovery() {
-    return Center(
-      child: SingleChildScrollView(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const CircularProgressIndicator(),
-            const SizedBox(height: 20),
-            const Text(
-              'Recuperando tu viaje...',
-              textAlign: TextAlign.center,
-              style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
-            ),
-            const SizedBox(height: 12),
-            const Text(
-              'Tu estado indica un viaje en curso. '
-              'Estamos confirmándolo con TukiTuki.',
-              textAlign: TextAlign.center,
-            ),
-            const SizedBox(height: 28),
-            SizedBox(
-              width: double.infinity,
-              child: OutlinedButton(
-                onPressed: _restoreInFlight
-                    ? null
-                    : () => unawaited(_restoreState()),
-                child: const Padding(
-                  padding: EdgeInsets.symmetric(vertical: 16),
-                  child: Text('Reintentar'),
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
+  String get _onlineDurationDisplay {
+    final state = _operationalState;
 
-  Widget _buildStatus() {
-    final isAvailable = _status == DriverHomeStatus.available;
-
-    if (isAvailable && _pendingProposals.isNotEmpty) {
-      final proposal = _pendingProposals.first;
-      final fare = proposal.proposedFare ?? proposal.passengerOfferFare;
-
-      return Center(
-        child: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Icon(Icons.hourglass_top, size: 90),
-              const SizedBox(height: 24),
-              Text(
-                _pendingProposals.length > 1
-                    ? '${_pendingProposals.length} propuestas enviadas'
-                    : 'Propuesta enviada',
-                textAlign: TextAlign.center,
-                style: const TextStyle(
-                  fontSize: 28,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-              const SizedBox(height: 12),
-              Text(
-                'S/ $fare',
-                style: const TextStyle(
-                  fontSize: 32,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-              const SizedBox(height: 16),
-              const Text(
-                'Esperando que el pasajero elija a su conductor.',
-                textAlign: TextAlign.center,
-              ),
-              const SizedBox(height: 8),
-              const Text(
-                'Sigues disponible mientras esperas la respuesta.',
-                textAlign: TextAlign.center,
-              ),
-              if (_locationStatusMessage != null) ...[
-                const SizedBox(height: 20),
-                _buildLocationWarning(),
-              ],
-            ],
-          ),
-        ),
-      );
+    if (state == null) {
+      return '—';
     }
 
-    return Center(
-      child: SingleChildScrollView(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(
-              isAvailable ? Icons.check_circle : Icons.offline_bolt_outlined,
-              size: 90,
-            ),
-            const SizedBox(height: 24),
-            Text(
-              isAvailable ? 'Estás disponible' : 'Estás desconectado',
-              textAlign: TextAlign.center,
-              style: const TextStyle(fontSize: 28, fontWeight: FontWeight.bold),
-            ),
-            const SizedBox(height: 12),
-            Text(
-              isAvailable
-                  ? 'Esperando solicitudes de viaje'
-                  : 'Conéctate para recibir viajes',
-              textAlign: TextAlign.center,
-            ),
-            if (isAvailable &&
-                _lastPosition != null &&
-                _locationStatusMessage == null) ...[
-              const SizedBox(height: 12),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Icon(
-                    _effectiveGpsStatus == DriverGpsStatus.active
-                        ? Icons.location_on
-                        : Icons.location_searching,
-                    size: 18,
-                  ),
-                  const SizedBox(width: 6),
-                  Text(_gpsStatusLabel()),
-                ],
-              ),
-            ],
-            if (_locationStatusMessage != null) ...[
-              const SizedBox(height: 20),
-              _buildLocationWarning(),
-            ],
-            const SizedBox(height: 32),
-            SizedBox(
-              width: double.infinity,
-              child: FilledButton(
-                onPressed: _loading
-                    ? null
-                    : isAvailable
-                    ? _goOffline
-                    : _goOnline,
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 16),
-                  child: _loading
-                      ? const SizedBox(
-                          width: 22,
-                          height: 22,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
-                      : Text(isAvailable ? 'Desconectarme' : 'Conectarme'),
-                ),
-              ),
-            ),
-            _buildDailyStatsSection(),
-          ],
-        ),
-      ),
-    );
+    final duration = state.onlineDurationAt(DateTime.now());
+
+    if (duration == null) {
+      return '—';
+    }
+
+    final hours = duration.inHours;
+    final minutes = duration.inMinutes.remainder(60);
+
+    return hours > 0 ? '${hours}h ${minutes}m' : '${minutes}m';
   }
 
   String _gpsStatusLabel() {
@@ -1768,65 +1797,120 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
     }
   }
 
-  Widget _buildDailyStatsSection() {
-    final stats = _dailyStats;
+  /// "Ubicación GPS activa" solo cuando hay una Position real y
+  /// fresh, y no hay ningún problema conocido (serviceDisabled,
+  /// permission denied/forever, acquire/publish error).
+  bool get _gpsPillActive =>
+      _lastPosition != null && _effectiveGpsStatus == DriverGpsStatus.active;
 
-    if (stats == null && _statsError == null) {
-      return const SizedBox.shrink();
-    }
+  bool get _showReducedAccuracyHint =>
+      _gpsPillActive &&
+      _locationAccuracyStatus == LocationAccuracyStatus.reduced;
 
-    return Padding(
-      padding: const EdgeInsets.only(top: 24),
-      child: Card(
-        child: Padding(
-          padding: const EdgeInsets.all(16),
-          child: stats != null
-              ? Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceAround,
-                  children: [
-                    _StatColumn(
-                      label: 'Ganado hoy',
-                      value: 'S/ ${stats.grossAmount}',
-                    ),
-                    _StatColumn(
-                      label: 'Viajes',
-                      value: '${stats.completedRides}',
-                    ),
-                  ],
-                )
-              : Row(
-                  children: [
-                    Expanded(
-                      child: Text(
-                        _statsError ??
-                            'No se pudieron cargar tus estadísticas de hoy.',
-                      ),
-                    ),
-                    TextButton(
-                      onPressed: _loadingStats
-                          ? null
-                          : () => unawaited(_loadDailyStats()),
-                      child: const Text('Reintentar'),
-                    ),
-                  ],
-                ),
-        ),
-      ),
-    );
-  }
+  /// Igual que Passenger: el punto azul nativo solo se activa cuando
+  /// es seguro hacerlo. Nunca se activa solo porque `position` no sea
+  /// null: si el último intento conocido falló por permiso o
+  /// servicio, seguimos sin habilitarlo aunque quede una Position
+  /// vieja cacheada.
+  bool get _myLocationSafe =>
+      _lastPosition != null &&
+      _gpsStatus != DriverGpsStatus.permissionDenied &&
+      _gpsStatus != DriverGpsStatus.permissionDeniedForever &&
+      _gpsStatus != DriverGpsStatus.serviceDisabled;
 
-  Widget _buildLocationWarning() {
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
+  /// Alto del área física del mapa dentro del espacio disponible bajo
+  /// el header (`availableHeight`, medido en vivo con [LayoutBuilder]:
+  /// nunca un número fijo pensado para un dispositivo puntual). Deja
+  /// el resto del espacio para que el bottom sheet ocupe SU región
+  /// propia, en vez de flotar detrás de todo el mapa.
+  double _mapAreaHeight(double availableHeight) =>
+      (availableHeight * 0.42).clamp(200.0, 340.0);
+
+  /// Cuánto se solapa el borde redondeado del sheet sobre el borde
+  /// inferior del área del mapa. Implementado con geometría real
+  /// ([Positioned] con `top` explícito), no con un `Transform`: así
+  /// el sheet ocupa físicamente esa región —sin espacio reservado
+  /// pero sin pintar detrás del solape— en vez de solo desplazar su
+  /// pintura y dejar un hueco.
+  static const double _sheetOverlap = 20;
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: DriverPalette.cream,
+      body: SafeArea(
+        child: Column(
           children: [
-            const Icon(Icons.location_off),
-            const SizedBox(width: 12),
+            _buildHeader(),
             Expanded(
-              child: Text(
-                _locationStatusMessage ?? 'La ubicación no está disponible.',
+              child: LayoutBuilder(
+                builder: (context, constraints) {
+                  final mapHeight = _mapAreaHeight(constraints.maxHeight);
+                  final isOffline = _status == DriverHomeStatus.offline;
+
+                  return Stack(
+                    children: [
+                      Positioned(
+                        top: 0,
+                        left: 0,
+                        right: 0,
+                        height: mapHeight,
+                        child: Stack(
+                          fit: StackFit.expand,
+                          children: [
+                            Positioned.fill(
+                              child: DriverHomeMap(
+                                position: _lastPosition,
+                                myLocationEnabled: _myLocationSafe,
+                                fallback: _mapFallback,
+                                cameraRequest: _cameraRequest,
+                              ),
+                            ),
+                            if (_showRecenterButton)
+                              Positioned(
+                                top: 14,
+                                right: 16,
+                                child: _buildRecenterButton(),
+                              ),
+                            /*
+                             * OFFLINE con una Position ya conocida: el
+                             * GoogleMap real sigue montado debajo (para
+                             * no repetir el ciclo dispose/recreate que
+                             * causó el bug de controller), pero el
+                             * conductor NO debe percibirlo. Un overlay
+                             * opaco con el MISMO copy de fallback lo
+                             * cubre por completo y absorbe cualquier
+                             * tap/gesto para que no llegue al mapa.
+                             *
+                             * Si todavía no hay Position (primer
+                             * OFFLINE), no hace falta: DriverHomeMap ya
+                             * muestra su propio fallback porque
+                             * `position` es null, y agregar este
+                             * overlay encima duplicaría el icono.
+                             */
+                            if (isOffline && _lastPosition != null)
+                              Positioned.fill(
+                                child: GestureDetector(
+                                  behavior: HitTestBehavior.opaque,
+                                  onTap: () {},
+                                  child: DriverHomeMapFallbackView(
+                                    reason: _mapFallback,
+                                  ),
+                                ),
+                              ),
+                          ],
+                        ),
+                      ),
+                      Positioned(
+                        top: mapHeight - _sheetOverlap,
+                        left: 0,
+                        right: 0,
+                        bottom: 0,
+                        child: _buildSheet(),
+                      ),
+                    ],
+                  );
+                },
               ),
             ),
           ],
@@ -1835,139 +1919,781 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
     );
   }
 
-  Widget _buildOffer(DriverRideOffer offer) {
-    return SingleChildScrollView(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          const SizedBox(height: 20),
-          const Icon(Icons.notifications_active, size: 72),
-          const SizedBox(height: 16),
-          const Text(
-            '¡Nuevo viaje!',
-            textAlign: TextAlign.center,
-            style: TextStyle(fontSize: 30, fontWeight: FontWeight.bold),
+  Widget _buildHeader() {
+    return ColoredBox(
+      color: DriverPalette.cream,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 8, 8, 8),
+        child: Row(
+          children: [
+            Container(
+              width: 34,
+              height: 34,
+              decoration: BoxDecoration(
+                color: DriverPalette.greenPrimary,
+                shape: BoxShape.circle,
+                border: Border.all(color: DriverPalette.amberLight, width: 1.5),
+              ),
+              child: const Icon(
+                Icons.local_taxi_rounded,
+                color: DriverPalette.amber,
+                size: 18,
+              ),
+            ),
+            const SizedBox(width: 10),
+            const Expanded(
+              child: Text(
+                'TukiTuki Conductor',
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  color: DriverPalette.greenPrimary,
+                  fontSize: 17,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+            ),
+            IconButton(
+              key: const ValueKey('driver-home-logout-button'),
+              onPressed: (_status == DriverHomeStatus.restoring || _loggingOut)
+                  ? null
+                  : _logout,
+              icon: _loggingOut
+                  ? const SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: DriverPalette.greenPrimary,
+                      ),
+                    )
+                  : const Icon(Icons.logout, color: DriverPalette.greenPrimary),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSheet() {
+    switch (_status) {
+      case DriverHomeStatus.restoring:
+        return _sheetShell(_buildRestoringSheet());
+      case DriverHomeStatus.error:
+        return _sheetShell(_buildErrorSheet());
+      case DriverHomeStatus.busyRecovery:
+        return _sheetShell(_buildBusyRecoverySheet());
+      case DriverHomeStatus.offline:
+        return _sheetShell(_buildOfflineSheet());
+      case DriverHomeStatus.available:
+        if (_offer != null) {
+          return _sheetShell(_buildOfferSheet(_offer!));
+        }
+        if (_pendingProposals.isNotEmpty) {
+          return _sheetShell(_buildProposalsSheet());
+        }
+        return _sheetShell(_buildAvailableSheet());
+    }
+  }
+
+  /// El sheet vive en su PROPIA región física (un [Positioned] con
+  /// `top: mapHeight - _sheetOverlap` en [build], no un
+  /// `Column`+`Transform`): su caja real ya empieza en ese punto, así
+  /// que pinta cream hasta el borde inferior sin dejar ningún hueco
+  /// reservado-pero-no-pintado (un `Transform` solo mueve el dibujo,
+  /// no la caja de layout, y eso era exactamente lo que producía la
+  /// franja residual). `SafeArea(top:false)` sigue reservando el
+  /// inset inferior seguro para que el CTA nunca quede bajo la barra
+  /// de gestos, con el mismo cream de fondo detrás.
+  Widget _sheetShell(Widget child) {
+    return SafeArea(
+      top: false,
+      child: Container(
+        width: double.infinity,
+        decoration: const BoxDecoration(
+          color: DriverPalette.cream,
+          borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black26,
+              blurRadius: 18,
+              offset: Offset(0, -4),
+            ),
+          ],
+        ),
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.fromLTRB(20, 10, 20, 18),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Center(
+                child: Container(
+                  width: 40,
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: DriverPalette.brown.withValues(alpha: 0.25),
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 14),
+              child,
+            ],
           ),
-          const SizedBox(height: 8),
-          const Text(
-            'Precio recomendado TukiTuki',
-            textAlign: TextAlign.center,
+        ),
+      ),
+    );
+  }
+
+  Widget _buildRestoringSheet() {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: const [
+        SizedBox(
+          width: 28,
+          height: 28,
+          child: CircularProgressIndicator(
+            strokeWidth: 3,
+            color: DriverPalette.greenPrimary,
           ),
+        ),
+        SizedBox(height: 16),
+        Text(
+          'Preparando tu jornada',
+          textAlign: TextAlign.center,
+          style: TextStyle(
+            fontSize: 20,
+            fontWeight: FontWeight.w800,
+            color: DriverPalette.greenPrimary,
+          ),
+        ),
+        SizedBox(height: 6),
+        Text(
+          'Recuperando tu estado...',
+          textAlign: TextAlign.center,
+          style: TextStyle(color: DriverPalette.brown),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildErrorSheet() {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        const _StatusIconCircle(
+          color: DriverPalette.coral,
+          icon: Icons.error_outline,
+        ),
+        const SizedBox(height: 14),
+        const Text(
+          'No pudimos recuperar tu estado',
+          textAlign: TextAlign.center,
+          style: TextStyle(
+            fontSize: 19,
+            fontWeight: FontWeight.w800,
+            color: DriverPalette.greenPrimary,
+          ),
+        ),
+        const SizedBox(height: 6),
+        Text(
+          _errorMessage ?? 'Ocurrió un error inesperado.',
+          textAlign: TextAlign.center,
+          style: const TextStyle(color: DriverPalette.brown),
+        ),
+        const SizedBox(height: 18),
+        SizedBox(
+          width: double.infinity,
+          child: FilledButton(
+            onPressed: _restoreInFlight
+                ? null
+                : () => unawaited(_restoreState()),
+            style: FilledButton.styleFrom(
+              backgroundColor: DriverPalette.greenPrimary,
+            ),
+            child: const Padding(
+              padding: EdgeInsets.symmetric(vertical: 14),
+              child: Text('Reintentar'),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildBusyRecoverySheet() {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        const SizedBox(
+          width: 28,
+          height: 28,
+          child: CircularProgressIndicator(
+            strokeWidth: 3,
+            color: DriverPalette.greenPrimary,
+          ),
+        ),
+        const SizedBox(height: 14),
+        const Text(
+          'Recuperando tu viaje...',
+          textAlign: TextAlign.center,
+          style: TextStyle(
+            fontSize: 19,
+            fontWeight: FontWeight.w800,
+            color: DriverPalette.greenPrimary,
+          ),
+        ),
+        const SizedBox(height: 6),
+        const Text(
+          'Estamos sincronizando tu viaje activo.',
+          textAlign: TextAlign.center,
+          style: TextStyle(color: DriverPalette.brown),
+        ),
+        const SizedBox(height: 18),
+        SizedBox(
+          width: double.infinity,
+          child: OutlinedButton(
+            onPressed: _restoreInFlight
+                ? null
+                : () => unawaited(_restoreState()),
+            child: const Padding(
+              padding: EdgeInsets.symmetric(vertical: 14),
+              child: Text('Reintentar'),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildOfflineSheet() {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        // Sin icono aquí a propósito: el fallback del área de mapa ya
+        // comunica "Conéctate para activar tu ubicación"; repetir un
+        // icono en el sheet era redundante.
+        const Text(
+          'Estás desconectado',
+          textAlign: TextAlign.center,
+          style: TextStyle(
+            fontSize: 20,
+            fontWeight: FontWeight.w800,
+            color: DriverPalette.greenPrimary,
+          ),
+        ),
+        const SizedBox(height: 6),
+        const Text(
+          'Conéctate para comenzar a recibir solicitudes',
+          textAlign: TextAlign.center,
+          style: TextStyle(color: DriverPalette.brown),
+        ),
+        const SizedBox(height: 16),
+        // Con solo 2 tarjetas (sin EN LÍNEA), se acotan un poco los
+        // lados para que no se sientan estiradas de borde a borde.
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 24),
+          child: _buildStatsRow(includeOnlineDuration: false),
+        ),
+        const SizedBox(height: 16),
+        SizedBox(
+          width: double.infinity,
+          child: FilledButton.icon(
+            onPressed: _loading ? null : _goOnline,
+            style: FilledButton.styleFrom(
+              backgroundColor: DriverPalette.greenPrimary,
+            ),
+            icon: _loading
+                ? const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: Colors.white,
+                    ),
+                  )
+                : const Icon(Icons.power_settings_new),
+            label: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 14),
+              child: Text(_loading ? 'Conectando...' : 'Conectarme'),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildAvailableSheet() {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        const _StatusIconCircle(
+          color: DriverPalette.greenAvailable,
+          icon: Icons.check,
+        ),
+        const SizedBox(height: 14),
+        const Text(
+          'Estás disponible',
+          textAlign: TextAlign.center,
+          style: TextStyle(
+            fontSize: 20,
+            fontWeight: FontWeight.w800,
+            color: DriverPalette.greenPrimary,
+          ),
+        ),
+        const SizedBox(height: 6),
+        const Text(
+          'Esperando solicitudes de viaje',
+          textAlign: TextAlign.center,
+          style: TextStyle(color: DriverPalette.brown),
+        ),
+        if (_gpsPillActive) ...[const SizedBox(height: 10), _buildGpsPill()],
+        if (_showReducedAccuracyHint) ...[
           const SizedBox(height: 6),
           Text(
-            'S/ ${offer.estimatedFare}',
+            'Activa la ubicación precisa para mejorar tu posición',
             textAlign: TextAlign.center,
-            style: const TextStyle(fontSize: 24, fontWeight: FontWeight.w600),
-          ),
-          const SizedBox(height: 20),
-          Card(
-            child: Padding(
-              padding: const EdgeInsets.all(20),
-              child: Column(
-                children: [
-                  const Text(
-                    'El pasajero ofrece',
-                    style: TextStyle(fontSize: 18),
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    'S/ ${offer.passengerOfferFare}',
-                    style: const TextStyle(
-                      fontSize: 38,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                ],
-              ),
+            style: TextStyle(
+              fontSize: 11,
+              color: DriverPalette.brown.withValues(alpha: 0.8),
             ),
           ),
-          const SizedBox(height: 24),
-          Card(
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                children: [
-                  ListTile(
-                    leading: const Icon(Icons.my_location),
-                    title: const Text('Recoger en'),
-                    subtitle: Text(offer.originAddress),
-                  ),
-                  const Divider(),
-                  ListTile(
-                    leading: const Icon(Icons.location_on),
-                    title: const Text('Destino'),
-                    subtitle: Text(offer.destinationAddress),
-                  ),
-                ],
-              ),
+        ],
+        const SizedBox(height: 16),
+        _buildStatsRow(includeOnlineDuration: true),
+        const SizedBox(height: 14),
+        _buildTip(),
+        if (_locationStatusMessage != null) ...[
+          const SizedBox(height: 14),
+          _buildLocationWarning(),
+        ],
+        const SizedBox(height: 18),
+        SizedBox(
+          width: double.infinity,
+          child: OutlinedButton.icon(
+            onPressed: _loading ? null : _goOffline,
+            style: OutlinedButton.styleFrom(
+              foregroundColor: DriverPalette.coral,
+              side: const BorderSide(color: DriverPalette.coral),
             ),
-          ),
-          const SizedBox(height: 16),
-          Text(
-            'Estás a '
-            '${(offer.distanceToOriginMeters / 1000).toStringAsFixed(1)} km '
-            'del pasajero',
-            textAlign: TextAlign.center,
-          ),
-          const SizedBox(height: 28),
-          FilledButton.icon(
-            onPressed: _accepting ? null : _acceptOffer,
-            icon: _accepting
+            icon: _loading
                 ? const SizedBox(
-                    width: 20,
-                    height: 20,
+                    width: 18,
+                    height: 18,
                     child: CircularProgressIndicator(strokeWidth: 2),
                   )
-                : const Icon(Icons.check),
+                : const Icon(Icons.power_settings_new),
             label: Padding(
-              padding: const EdgeInsets.symmetric(vertical: 16),
-              child: Text(
-                _accepting
-                    ? 'Enviando...'
-                    : 'Aceptar S/ ${offer.passengerOfferFare}',
-              ),
+              padding: const EdgeInsets.symmetric(vertical: 14),
+              child: Text(_loading ? 'Desconectando...' : 'Desconectarme'),
             ),
           ),
-          const SizedBox(height: 12),
-          OutlinedButton.icon(
-            onPressed: _accepting ? null : _counterOffer,
-            icon: const Icon(Icons.edit),
-            label: const Padding(
-              padding: EdgeInsets.symmetric(vertical: 16),
-              child: Text('Hacer contraoferta'),
-            ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildStatsRow({required bool includeOnlineDuration}) {
+    final cards = <Widget>[
+      Expanded(
+        child: _StatCard(value: _grossAmountDisplay, label: 'GANADO HOY'),
+      ),
+      const SizedBox(width: 10),
+      Expanded(
+        child: _StatCard(value: _completedRidesDisplay, label: 'VIAJES HOY'),
+      ),
+    ];
+
+    if (includeOnlineDuration && _status == DriverHomeStatus.available) {
+      cards.addAll([
+        const SizedBox(width: 10),
+        Expanded(
+          child: _StatCard(value: _onlineDurationDisplay, label: 'EN LÍNEA'),
+        ),
+      ]);
+    }
+
+    return Row(children: cards);
+  }
+
+  Widget _buildGpsPill() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      decoration: BoxDecoration(
+        color: DriverPalette.greenAvailable.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Icon(
+            Icons.location_on,
+            size: 14,
+            color: DriverPalette.greenAvailable,
           ),
-          const SizedBox(height: 8),
-          TextButton(
-            onPressed: _accepting ? null : _rejectOffer,
-            child: const Padding(
-              padding: EdgeInsets.symmetric(vertical: 12),
-              child: Text('Rechazar solicitud'),
+          const SizedBox(width: 6),
+          Text(
+            _gpsStatusLabel(),
+            style: const TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+              color: DriverPalette.greenAvailable,
             ),
           ),
         ],
       ),
     );
   }
+
+  Widget _buildTip() {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: DriverPalette.amberLight.withValues(alpha: 0.35),
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: const Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(
+            Icons.lightbulb_outline,
+            size: 18,
+            color: DriverPalette.orangeDeep,
+          ),
+          SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              'Tip: Mantén tu ubicación activa para recibir solicitudes cercanas.',
+              style: TextStyle(fontSize: 12.5, color: DriverPalette.brown),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildLocationWarning() {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Icon(Icons.location_off, color: DriverPalette.coral),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Text(
+              _locationStatusMessage ?? 'La ubicación no está disponible.',
+              style: const TextStyle(color: DriverPalette.brown),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildProposalsSheet() {
+    final count = _pendingProposals.length;
+
+    var primary = _pendingProposals.first;
+
+    for (final proposal in _pendingProposals) {
+      final currentExpiry = primary.expiresAt;
+      final candidateExpiry = proposal.expiresAt;
+
+      if (currentExpiry == null) {
+        continue;
+      }
+
+      if (candidateExpiry != null && candidateExpiry.isBefore(currentExpiry)) {
+        primary = proposal;
+      }
+    }
+
+    final fare = primary.proposedFare ?? primary.passengerOfferFare;
+
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        const _StatusIconCircle(
+          color: DriverPalette.amber,
+          icon: Icons.hourglass_top,
+        ),
+        const SizedBox(height: 14),
+        Text(
+          count > 1 ? 'Propuestas pendientes ($count)' : 'Propuesta enviada',
+          textAlign: TextAlign.center,
+          style: const TextStyle(
+            fontSize: 20,
+            fontWeight: FontWeight.w800,
+            color: DriverPalette.greenPrimary,
+          ),
+        ),
+        const SizedBox(height: 10),
+        Text(
+          'S/ $fare',
+          style: const TextStyle(
+            fontSize: 30,
+            fontWeight: FontWeight.w800,
+            color: DriverPalette.greenPrimary,
+          ),
+        ),
+        const SizedBox(height: 12),
+        const Text(
+          'Esperando que el pasajero elija a su conductor.',
+          textAlign: TextAlign.center,
+          style: TextStyle(color: DriverPalette.brown),
+        ),
+        const SizedBox(height: 6),
+        const Text(
+          'Sigues disponible mientras esperas la respuesta.',
+          textAlign: TextAlign.center,
+          style: TextStyle(color: DriverPalette.brown),
+        ),
+        if (count > 1) ...[
+          const SizedBox(height: 14),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            alignment: WrapAlignment.center,
+            children: _pendingProposals.map((proposal) {
+              final chipFare =
+                  proposal.proposedFare ?? proposal.passengerOfferFare;
+
+              return Chip(
+                label: Text('S/ $chipFare'),
+                backgroundColor: DriverPalette.amberLight.withValues(
+                  alpha: 0.4,
+                ),
+                side: BorderSide.none,
+              );
+            }).toList(),
+          ),
+        ],
+        if (_locationStatusMessage != null) ...[
+          const SizedBox(height: 14),
+          _buildLocationWarning(),
+        ],
+      ],
+    );
+  }
+
+  Widget _buildOfferSheet(DriverRideOffer offer) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const Center(
+          child: Icon(
+            Icons.notifications_active,
+            size: 44,
+            color: DriverPalette.orange,
+          ),
+        ),
+        const SizedBox(height: 10),
+        const Text(
+          '¡Nueva solicitud!',
+          textAlign: TextAlign.center,
+          style: TextStyle(
+            fontSize: 22,
+            fontWeight: FontWeight.w800,
+            color: DriverPalette.greenPrimary,
+          ),
+        ),
+        const SizedBox(height: 4),
+        const Text(
+          'Precio recomendado TukiTuki',
+          textAlign: TextAlign.center,
+          style: TextStyle(color: DriverPalette.brown),
+        ),
+        const SizedBox(height: 2),
+        Text(
+          'S/ ${offer.estimatedFare}',
+          textAlign: TextAlign.center,
+          style: const TextStyle(
+            fontSize: 18,
+            fontWeight: FontWeight.w700,
+            color: DriverPalette.greenPrimary,
+          ),
+        ),
+        const SizedBox(height: 14),
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(16),
+          ),
+          child: Column(
+            children: [
+              const Text(
+                'El pasajero ofrece',
+                style: TextStyle(color: DriverPalette.brown),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                'S/ ${offer.passengerOfferFare}',
+                style: const TextStyle(
+                  fontSize: 30,
+                  fontWeight: FontWeight.w800,
+                  color: DriverPalette.greenPrimary,
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 14),
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 8),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(16),
+          ),
+          child: Column(
+            children: [
+              ListTile(
+                dense: true,
+                leading: const Icon(
+                  Icons.my_location,
+                  color: DriverPalette.greenAvailable,
+                ),
+                title: const Text('Recoger en'),
+                subtitle: Text(offer.originAddress),
+              ),
+              const Divider(height: 1),
+              ListTile(
+                dense: true,
+                leading: const Icon(
+                  Icons.location_on,
+                  color: DriverPalette.orange,
+                ),
+                title: const Text('Destino'),
+                subtitle: Text(offer.destinationAddress),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 10),
+        Text(
+          'Estás a '
+          '${(offer.distanceToOriginMeters / 1000).toStringAsFixed(1)} km '
+          'del pasajero',
+          textAlign: TextAlign.center,
+          style: const TextStyle(color: DriverPalette.brown),
+        ),
+        const SizedBox(height: 16),
+        FilledButton.icon(
+          onPressed: _accepting ? null : _acceptOffer,
+          style: FilledButton.styleFrom(
+            backgroundColor: DriverPalette.greenPrimary,
+          ),
+          icon: _accepting
+              ? const SizedBox(
+                  width: 20,
+                  height: 20,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    color: Colors.white,
+                  ),
+                )
+              : const Icon(Icons.check),
+          label: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 14),
+            child: Text(
+              _accepting
+                  ? 'Enviando...'
+                  : 'Aceptar S/ ${offer.passengerOfferFare}',
+            ),
+          ),
+        ),
+        const SizedBox(height: 10),
+        OutlinedButton.icon(
+          onPressed: _accepting ? null : _counterOffer,
+          icon: const Icon(Icons.edit),
+          label: const Padding(
+            padding: EdgeInsets.symmetric(vertical: 14),
+            child: Text('Hacer contraoferta'),
+          ),
+        ),
+        const SizedBox(height: 4),
+        TextButton(
+          onPressed: _accepting ? null : _rejectOffer,
+          child: const Padding(
+            padding: EdgeInsets.symmetric(vertical: 10),
+            child: Text('Rechazar solicitud'),
+          ),
+        ),
+      ],
+    );
+  }
 }
 
-class _StatColumn extends StatelessWidget {
-  const _StatColumn({required this.label, required this.value});
+class _StatusIconCircle extends StatelessWidget {
+  const _StatusIconCircle({required this.color, required this.icon});
 
-  final String label;
-  final String value;
+  final Color color;
+  final IconData icon;
 
   @override
   Widget build(BuildContext context) {
-    return Column(
-      children: [
-        Text(
-          value,
-          style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
-        ),
-        const SizedBox(height: 4),
-        Text(label),
-      ],
+    return Container(
+      width: 54,
+      height: 54,
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.15),
+        shape: BoxShape.circle,
+      ),
+      child: Icon(icon, color: color, size: 28),
+    );
+  }
+}
+
+class _StatCard extends StatelessWidget {
+  const _StatCard({required this.value, required this.label});
+
+  final String value;
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 6),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            value,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(
+              fontSize: 16,
+              fontWeight: FontWeight.w800,
+              color: DriverPalette.greenPrimary,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            label,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(
+              fontSize: 10,
+              fontWeight: FontWeight.w700,
+              color: DriverPalette.brown,
+              letterSpacing: 0.4,
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

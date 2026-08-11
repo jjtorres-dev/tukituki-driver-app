@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
@@ -7,8 +8,10 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:go_router/go_router.dart';
+import 'package:google_maps_flutter/google_maps_flutter.dart' show GoogleMap;
 
 import 'package:driver/core/storage/secure_storage.dart';
+import 'package:driver/core/theme/driver_palette.dart';
 import 'package:driver/features/auth/data/auth_repository.dart';
 import 'package:driver/features/driver/data/driver_offers_repository.dart';
 import 'package:driver/features/driver/data/driver_operations_repository.dart';
@@ -18,6 +21,7 @@ import 'package:driver/features/driver/domain/driver_daily_stats.dart';
 import 'package:driver/features/driver/domain/driver_operational_state.dart';
 import 'package:driver/features/driver/domain/driver_pending_proposal.dart';
 import 'package:driver/features/driver/domain/driver_ride_offer.dart';
+import 'package:driver/features/driver/presentation/driver_home_map.dart';
 import 'package:driver/features/driver/presentation/driver_home_screen.dart';
 
 void main() {
@@ -39,6 +43,8 @@ void main() {
 
   tearDown(() {
     driverHomeGpsFetcherOverride = null;
+    driverHomeMapBuilderOverride = null;
+    driverHomeLocationAccuracyFetcherOverride = null;
   });
 
   testWidgets(
@@ -81,7 +87,9 @@ void main() {
       );
       await tester.pump();
 
-      expect(find.text('Estás desconectado'), findsOneWidget);
+      // "Estás desconectado" aparece dos veces por diseño: en la
+      // tarjeta flotante de disponibilidad y en el título del sheet.
+      expect(find.text('Estás desconectado'), findsWidgets);
 
       await tester.pump(const Duration(seconds: 10));
       await tester.pump(const Duration(seconds: 3));
@@ -238,11 +246,11 @@ void main() {
     );
     await tester.pump();
 
-    expect(find.text('Estás desconectado'), findsOneWidget);
-    expect(
-      find.text('No se pudieron cargar tus estadísticas de hoy.'),
-      findsOneWidget,
-    );
+    // "Estás desconectado" aparece dos veces por diseño: en la
+    // tarjeta flotante de disponibilidad y en el título del sheet.
+    expect(find.text('Estás desconectado'), findsWidgets);
+    // Un fallo de stats se muestra como "—", no como texto de error.
+    expect(find.text('—'), findsWidgets);
     expect(tester.takeException(), isNull);
   });
 
@@ -333,7 +341,7 @@ void main() {
     );
     await tester.pump();
 
-    expect(find.text('2 propuestas enviadas'), findsOneWidget);
+    expect(find.text('Propuestas pendientes (2)'), findsOneWidget);
 
     final dynamic state = tester.state(find.byType(DriverHomeScreen));
     expect(state.debugPendingProposals, hasLength(2));
@@ -402,7 +410,7 @@ void main() {
     );
     await tester.pump();
 
-    expect(find.text('¡Nuevo viaje!'), findsOneWidget);
+    expect(find.text('¡Nueva solicitud!'), findsOneWidget);
 
     final dynamic state = tester.state(find.byType(DriverHomeScreen));
     expect(state.debugOffer, isNotNull);
@@ -462,7 +470,9 @@ void main() {
       );
       await tester.pump();
 
-      expect(find.text('Estás desconectado'), findsOneWidget);
+      // "Estás desconectado" aparece dos veces por diseño: en la
+      // tarjeta flotante de disponibilidad y en el título del sheet.
+      expect(find.text('Estás desconectado'), findsWidgets);
 
       await tester.tap(find.text('Conectarme'));
       await tester.pump();
@@ -530,9 +540,12 @@ void main() {
     );
     await tester.pump();
 
-    await tester.tap(find.byIcon(Icons.logout));
+    await tester.tap(find.byKey(const ValueKey('driver-home-logout-button')));
     await tester.pump();
-    await tester.tap(find.byIcon(Icons.logout), warnIfMissed: false);
+    await tester.tap(
+      find.byKey(const ValueKey('driver-home-logout-button')),
+      warnIfMissed: false,
+    );
     await tester.pump();
 
     auth.logoutGate!.complete();
@@ -857,7 +870,7 @@ void main() {
     );
     await tester.pump();
 
-    expect(find.text('¡Nuevo viaje!'), findsOneWidget);
+    expect(find.text('¡Nueva solicitud!'), findsOneWidget);
 
     secureStorageData.remove(StorageKeys.accessToken);
 
@@ -904,7 +917,7 @@ void main() {
     );
     await tester.pump();
 
-    expect(find.text('¡Nuevo viaje!'), findsOneWidget);
+    expect(find.text('¡Nueva solicitud!'), findsOneWidget);
 
     secureStorageData.remove(StorageKeys.accessToken);
 
@@ -956,7 +969,7 @@ void main() {
     );
     await tester.pump();
 
-    expect(find.text('¡Nuevo viaje!'), findsOneWidget);
+    expect(find.text('¡Nueva solicitud!'), findsOneWidget);
 
     secureStorageData.remove(StorageKeys.accessToken);
 
@@ -999,7 +1012,7 @@ void main() {
       );
       await tester.pump();
 
-      expect(find.text('¡Nuevo viaje!'), findsOneWidget);
+      expect(find.text('¡Nueva solicitud!'), findsOneWidget);
 
       await tester.ensureVisible(find.text('Aceptar S/ 7.00'));
       await tester.tap(find.text('Aceptar S/ 7.00'));
@@ -1042,7 +1055,7 @@ void main() {
       );
       await tester.pump();
 
-      expect(find.text('¡Nuevo viaje!'), findsOneWidget);
+      expect(find.text('¡Nueva solicitud!'), findsOneWidget);
 
       await tester.ensureVisible(find.text('Hacer contraoferta'));
       await tester.tap(find.text('Hacer contraoferta'));
@@ -1090,7 +1103,7 @@ void main() {
       );
       await tester.pump();
 
-      expect(find.text('¡Nuevo viaje!'), findsOneWidget);
+      expect(find.text('¡Nueva solicitud!'), findsOneWidget);
 
       await tester.ensureVisible(find.text('Rechazar solicitud'));
       await tester.tap(find.text('Rechazar solicitud'));
@@ -1148,7 +1161,7 @@ void main() {
       );
       await tester.pump();
 
-      expect(find.text('¡Nuevo viaje!'), findsOneWidget);
+      expect(find.text('¡Nueva solicitud!'), findsOneWidget);
 
       secureStorageData.remove(StorageKeys.accessToken);
 
@@ -1209,6 +1222,1442 @@ void main() {
       expect(operations.heartbeatCalls, heartbeatCallsAfterInvalidation);
     },
   );
+
+  group('Sin tarjeta superior de disponibilidad (cierre visual)', () {
+    testWidgets(
+      'A/B/C/D: AVAILABLE no tiene tarjeta "Estás en línea" ni Switch; '
+      'sí tiene "Estás disponible" y el CTA "Desconectarme"',
+      (tester) async {
+        final rides = _FakeRidesRepository();
+        final operations = _FakeOperationsRepository(
+          statusQueue: [
+            const DriverOperationalState(
+              status: DriverOperationalStatus.available,
+            ),
+          ],
+        );
+        final offers = _FakeOffersRepository();
+
+        await _pumpHome(
+          tester,
+          rides: rides,
+          operations: operations,
+          offers: offers,
+        );
+        await tester.pump();
+
+        expect(find.text('Estás en línea'), findsNothing);
+        expect(find.byType(Switch), findsNothing);
+
+        expect(find.text('Estás disponible'), findsOneWidget);
+        expect(find.text('Desconectarme'), findsOneWidget);
+      },
+    );
+
+    testWidgets('E/F/G: OFFLINE no tiene tarjeta superior redundante; "Estás '
+        'desconectado" aparece UNA sola vez (en el sheet) junto al CTA '
+        '"Conectarme"', (tester) async {
+      final rides = _FakeRidesRepository();
+      final operations = _FakeOperationsRepository(
+        statusQueue: [
+          const DriverOperationalState(status: DriverOperationalStatus.offline),
+        ],
+      );
+      final offers = _FakeOffersRepository();
+
+      await _pumpHome(
+        tester,
+        rides: rides,
+        operations: operations,
+        offers: offers,
+      );
+      await tester.pump();
+
+      expect(find.byType(Switch), findsNothing);
+      // Ya no hay 2 apariciones (tarjeta + sheet): solo la del sheet.
+      expect(find.text('Estás desconectado'), findsOneWidget);
+      expect(find.text('Conectarme'), findsOneWidget);
+    });
+
+    testWidgets(
+      'Conectarme/Desconectarme siguen cambiando el estado operativo sin '
+      'el switch (mismos goOnline/goOffline de siempre)',
+      (tester) async {
+        final rides = _FakeRidesRepository();
+        final operations = _FakeOperationsRepository(
+          statusQueue: [
+            const DriverOperationalState(
+              status: DriverOperationalStatus.offline,
+            ),
+          ],
+        );
+        final offers = _FakeOffersRepository();
+
+        await _pumpHome(
+          tester,
+          rides: rides,
+          operations: operations,
+          offers: offers,
+        );
+        await tester.pump();
+
+        await tester.ensureVisible(find.text('Conectarme'));
+        await tester.tap(find.text('Conectarme'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 50));
+
+        final dynamic state = tester.state(find.byType(DriverHomeScreen));
+        expect(state.debugStatus, DriverHomeStatus.available);
+        expect(operations.goOnlineCalls, 1);
+
+        await tester.ensureVisible(find.text('Desconectarme'));
+        await tester.tap(find.text('Desconectarme'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 50));
+
+        expect(state.debugStatus, DriverHomeStatus.offline);
+        expect(operations.goOfflineCalls, 1);
+      },
+    );
+  });
+
+  group('Duración "en línea"', () {
+    testWidgets(
+      'AVAILABLE con connectedAt muestra la tarjeta EN LÍNEA sin "—"',
+      (tester) async {
+        final connectedAt = DateTime.utc(2026, 8, 10, 9);
+
+        final rides = _FakeRidesRepository();
+        final operations = _FakeOperationsRepository(
+          statusQueue: [
+            DriverOperationalState(
+              status: DriverOperationalStatus.available,
+              connectedAt: connectedAt,
+            ),
+          ],
+          heartbeatQueue: [
+            DriverOperationalState(
+              status: DriverOperationalStatus.available,
+              connectedAt: connectedAt,
+            ),
+          ],
+        );
+        final offers = _FakeOffersRepository();
+
+        await _pumpHome(
+          tester,
+          rides: rides,
+          operations: operations,
+          offers: offers,
+        );
+        await tester.pump();
+
+        expect(find.text('EN LÍNEA'), findsOneWidget);
+        // El valor exacto depende del reloj real; solo garantizamos
+        // que no se muestra "—" cuando sí hay connectedAt.
+        expect(find.text('—'), findsNothing);
+      },
+    );
+
+    testWidgets('AVAILABLE sin connectedAt muestra "—" y nunca "0m"', (
+      tester,
+    ) async {
+      final rides = _FakeRidesRepository();
+      final operations = _FakeOperationsRepository(
+        statusQueue: [
+          const DriverOperationalState(
+            status: DriverOperationalStatus.available,
+          ),
+        ],
+      );
+      final offers = _FakeOffersRepository();
+
+      await _pumpHome(
+        tester,
+        rides: rides,
+        operations: operations,
+        offers: offers,
+      );
+      await tester.pump();
+
+      expect(find.text('EN LÍNEA'), findsOneWidget);
+      expect(find.text('0m'), findsNothing);
+      expect(find.text('—'), findsOneWidget);
+    });
+  });
+
+  group('Stats reales en el sheet', () {
+    testWidgets('muestra grossAmount y completedRides exactos de Backend', (
+      tester,
+    ) async {
+      final rides = _FakeRidesRepository();
+      final operations = _FakeOperationsRepository(
+        statusQueue: [
+          const DriverOperationalState(
+            status: DriverOperationalStatus.available,
+          ),
+        ],
+        dailyStatsResult: DriverDailyStats.fromJson(const {
+          'businessDate': '2026-08-10',
+          'timezone': 'America/Lima',
+          'completedRides': 5,
+          'grossAmount': '18.50',
+          'currency': 'PEN',
+          'asOf': '2026-08-10T15:00:00.000Z',
+        }),
+      );
+      final offers = _FakeOffersRepository();
+
+      await _pumpHome(
+        tester,
+        rides: rides,
+        operations: operations,
+        offers: offers,
+      );
+      await tester.pump();
+
+      expect(find.text('S/ 18.50'), findsOneWidget);
+      expect(find.text('5'), findsOneWidget);
+      expect(find.text('GANADO HOY'), findsOneWidget);
+      expect(find.text('VIAJES HOY'), findsOneWidget);
+    });
+
+    testWidgets('G: OFFLINE también conserva las stats reales', (tester) async {
+      final rides = _FakeRidesRepository();
+      final operations = _FakeOperationsRepository(
+        statusQueue: [
+          const DriverOperationalState(status: DriverOperationalStatus.offline),
+        ],
+        dailyStatsResult: DriverDailyStats.fromJson(const {
+          'businessDate': '2026-08-10',
+          'timezone': 'America/Lima',
+          'completedRides': 1,
+          'grossAmount': '4.50',
+          'currency': 'PEN',
+          'asOf': '2026-08-10T15:00:00.000Z',
+        }),
+      );
+      final offers = _FakeOffersRepository();
+
+      await _pumpHome(
+        tester,
+        rides: rides,
+        operations: operations,
+        offers: offers,
+      );
+      await tester.pump();
+
+      expect(find.text('S/ 4.50'), findsOneWidget);
+      expect(find.text('1'), findsOneWidget);
+      expect(find.text('GANADO HOY'), findsOneWidget);
+      expect(find.text('VIAJES HOY'), findsOneWidget);
+      // OFFLINE nunca muestra la tarjeta EN LÍNEA.
+      expect(find.text('EN LÍNEA'), findsNothing);
+    });
+
+    testWidgets('F: AVAILABLE conserva las stats reales', (tester) async {
+      final rides = _FakeRidesRepository();
+      final operations = _FakeOperationsRepository(
+        statusQueue: [
+          const DriverOperationalState(
+            status: DriverOperationalStatus.available,
+          ),
+        ],
+        dailyStatsResult: DriverDailyStats.fromJson(const {
+          'businessDate': '2026-08-10',
+          'timezone': 'America/Lima',
+          'completedRides': 1,
+          'grossAmount': '4.50',
+          'currency': 'PEN',
+          'asOf': '2026-08-10T15:00:00.000Z',
+        }),
+      );
+      final offers = _FakeOffersRepository();
+
+      await _pumpHome(
+        tester,
+        rides: rides,
+        operations: operations,
+        offers: offers,
+      );
+      await tester.pump();
+
+      expect(find.text('S/ 4.50'), findsOneWidget);
+      expect(find.text('1'), findsOneWidget);
+      expect(find.text('EN LÍNEA'), findsOneWidget);
+    });
+  });
+
+  group('Fallback OFFLINE y recenter de mapa', () {
+    testWidgets(
+      'A: OFFLINE sin adquisición de GPS muestra copy veraz, no "Obteniendo tu ubicación..."',
+      (tester) async {
+        final rides = _FakeRidesRepository();
+        final operations = _FakeOperationsRepository(
+          statusQueue: [
+            const DriverOperationalState(
+              status: DriverOperationalStatus.offline,
+            ),
+          ],
+        );
+        final offers = _FakeOffersRepository();
+
+        await _pumpHome(
+          tester,
+          rides: rides,
+          operations: operations,
+          offers: offers,
+        );
+        await tester.pump();
+
+        expect(
+          find.text('Conéctate para activar tu ubicación'),
+          findsOneWidget,
+        );
+        expect(find.text('Obteniendo tu ubicación...'), findsNothing);
+      },
+    );
+
+    testWidgets(
+      'B: al pulsar Conectarme y quedar adquiriendo GPS, sí muestra "Obteniendo tu ubicación..."',
+      (tester) async {
+        // GPS que nunca resuelve: el flujo queda "adquiriendo" de verdad.
+        driverHomeGpsFetcherOverride = ({required requestPermission}) {
+          return Completer<Position>().future;
+        };
+
+        final rides = _FakeRidesRepository();
+        final operations = _FakeOperationsRepository(
+          statusQueue: [
+            const DriverOperationalState(
+              status: DriverOperationalStatus.offline,
+            ),
+          ],
+        );
+        final offers = _FakeOffersRepository();
+
+        await _pumpHome(
+          tester,
+          rides: rides,
+          operations: operations,
+          offers: offers,
+        );
+        await tester.pump();
+
+        expect(
+          find.text('Conéctate para activar tu ubicación'),
+          findsOneWidget,
+        );
+
+        await tester.ensureVisible(find.text('Conectarme'));
+        await tester.tap(find.text('Conectarme'));
+        await tester.pump();
+
+        expect(find.text('Obteniendo tu ubicación...'), findsOneWidget);
+        expect(find.text('Conéctate para activar tu ubicación'), findsNothing);
+      },
+    );
+
+    testWidgets('C: el botón custom de recentrar existe con Position válida', (
+      tester,
+    ) async {
+      final rides = _FakeRidesRepository();
+      final operations = _FakeOperationsRepository(
+        statusQueue: [
+          const DriverOperationalState(
+            status: DriverOperationalStatus.available,
+          ),
+        ],
+      );
+      final offers = _FakeOffersRepository();
+
+      await _pumpHome(
+        tester,
+        rides: rides,
+        operations: operations,
+        offers: offers,
+      );
+      await tester.pump();
+
+      expect(find.byIcon(Icons.my_location), findsOneWidget);
+    });
+
+    testWidgets(
+      'E: tap en recentrar obtiene una Position NUEVA (no la cacheada) y actualiza el estado',
+      (tester) async {
+        final rides = _FakeRidesRepository();
+        final operations = _FakeOperationsRepository(
+          statusQueue: [
+            const DriverOperationalState(
+              status: DriverOperationalStatus.available,
+            ),
+          ],
+        );
+        final offers = _FakeOffersRepository();
+
+        await _pumpHome(
+          tester,
+          rides: rides,
+          operations: operations,
+          offers: offers,
+        );
+        await tester.pump();
+
+        final dynamic state = tester.state(find.byType(DriverHomeScreen));
+        expect(state.debugLastPosition.latitude, -12.05);
+
+        // Position C: distinta de la Position B ya cacheada en
+        // _lastPosition. El recenter NUNCA debe reutilizar B.
+        driverHomeGpsFetcherOverride = ({required requestPermission}) async {
+          return _fakePosition(lat: -13.9, lng: -76.1, accuracy: 6);
+        };
+
+        await tester.tap(
+          find.byKey(const ValueKey('driver-home-recenter-button')),
+        );
+        await tester.pump();
+
+        expect(state.debugLastPosition.latitude, -13.9);
+        expect(state.debugLastPosition.longitude, -76.1);
+      },
+    );
+
+    testWidgets(
+      'F: un error de GPS durante el recenter no altera la Position/cámara vigente',
+      (tester) async {
+        final rides = _FakeRidesRepository();
+        final operations = _FakeOperationsRepository(
+          statusQueue: [
+            const DriverOperationalState(
+              status: DriverOperationalStatus.available,
+            ),
+          ],
+        );
+        final offers = _FakeOffersRepository();
+
+        await _pumpHome(
+          tester,
+          rides: rides,
+          operations: operations,
+          offers: offers,
+        );
+        await tester.pump();
+
+        final dynamic state = tester.state(find.byType(DriverHomeScreen));
+        final latBefore = state.debugLastPosition.latitude;
+
+        driverHomeGpsFetcherOverride = ({required requestPermission}) async {
+          throw Exception('gps timeout');
+        };
+
+        await tester.tap(
+          find.byKey(const ValueKey('driver-home-recenter-button')),
+        );
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 300));
+
+        expect(state.debugLastPosition.latitude, latBefore);
+        expect(
+          find.text('No se pudo obtener tu ubicación GPS.'),
+          findsOneWidget,
+        );
+      },
+    );
+
+    testWidgets(
+      'G: doble tap en recentrar no dispara dos fetches concurrentes',
+      (tester) async {
+        var fetchCalls = 0;
+        final completer = Completer<Position>();
+
+        final rides = _FakeRidesRepository();
+        final operations = _FakeOperationsRepository(
+          statusQueue: [
+            const DriverOperationalState(
+              status: DriverOperationalStatus.available,
+            ),
+          ],
+        );
+        final offers = _FakeOffersRepository();
+
+        await _pumpHome(
+          tester,
+          rides: rides,
+          operations: operations,
+          offers: offers,
+        );
+        await tester.pump();
+
+        driverHomeGpsFetcherOverride = ({required requestPermission}) {
+          fetchCalls++;
+          return completer.future;
+        };
+
+        final button = find.byKey(
+          const ValueKey('driver-home-recenter-button'),
+        );
+
+        await tester.tap(button);
+        await tester.pump();
+        await tester.tap(button, warnIfMissed: false);
+        await tester.pump();
+
+        expect(fetchCalls, 1);
+
+        completer.complete(_fakePosition(lat: -10, lng: -70));
+        await tester.pump();
+      },
+    );
+
+    testWidgets(
+      'I: LocationAccuracy precise no muestra el aviso de precisión',
+      (tester) async {
+        driverHomeLocationAccuracyFetcherOverride = () async {
+          return LocationAccuracyStatus.precise;
+        };
+
+        final rides = _FakeRidesRepository();
+        final operations = _FakeOperationsRepository(
+          statusQueue: [
+            const DriverOperationalState(
+              status: DriverOperationalStatus.available,
+            ),
+          ],
+        );
+        final offers = _FakeOffersRepository();
+
+        await _pumpHome(
+          tester,
+          rides: rides,
+          operations: operations,
+          offers: offers,
+        );
+        await tester.pump();
+        await tester.pump();
+
+        final dynamic state = tester.state(find.byType(DriverHomeScreen));
+        expect(
+          state.debugLocationAccuracyStatus,
+          LocationAccuracyStatus.precise,
+        );
+        expect(
+          find.text('Activa la ubicación precisa para mejorar tu posición'),
+          findsNothing,
+        );
+      },
+    );
+
+    testWidgets('J: LocationAccuracy reduced muestra el diagnóstico correcto', (
+      tester,
+    ) async {
+      driverHomeLocationAccuracyFetcherOverride = () async {
+        return LocationAccuracyStatus.reduced;
+      };
+
+      final rides = _FakeRidesRepository();
+      final operations = _FakeOperationsRepository(
+        statusQueue: [
+          const DriverOperationalState(
+            status: DriverOperationalStatus.available,
+          ),
+        ],
+      );
+      final offers = _FakeOffersRepository();
+
+      await _pumpHome(
+        tester,
+        rides: rides,
+        operations: operations,
+        offers: offers,
+      );
+      await tester.pump();
+      await tester.pump();
+
+      final dynamic state = tester.state(find.byType(DriverHomeScreen));
+      expect(state.debugLocationAccuracyStatus, LocationAccuracyStatus.reduced);
+      expect(
+        find.text('Activa la ubicación precisa para mejorar tu posición'),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('K: sin Position, el GPS pill no aparece', (tester) async {
+      final rides = _FakeRidesRepository();
+      final operations = _FakeOperationsRepository(
+        statusQueue: [
+          const DriverOperationalState(status: DriverOperationalStatus.offline),
+        ],
+      );
+      final offers = _FakeOffersRepository();
+
+      await _pumpHome(
+        tester,
+        rides: rides,
+        operations: operations,
+        offers: offers,
+      );
+      await tester.pump();
+
+      expect(find.text('Ubicación GPS activa'), findsNothing);
+    });
+
+    testWidgets('L: con Position fresh, el GPS pill aparece', (tester) async {
+      final rides = _FakeRidesRepository();
+      final operations = _FakeOperationsRepository(
+        statusQueue: [
+          const DriverOperationalState(
+            status: DriverOperationalStatus.available,
+          ),
+        ],
+      );
+      final offers = _FakeOffersRepository();
+
+      await _pumpHome(
+        tester,
+        rides: rides,
+        operations: operations,
+        offers: offers,
+      );
+      await tester.pump();
+
+      expect(find.text('Ubicación GPS activa'), findsOneWidget);
+    });
+
+    testWidgets(
+      'C: permissionDenied → myLocationEnabled queda en false (punto azul apagado)',
+      (tester) async {
+        final rides = _FakeRidesRepository();
+        final operations = _FakeOperationsRepository(
+          statusQueue: [
+            const DriverOperationalState(
+              status: DriverOperationalStatus.available,
+            ),
+          ],
+        );
+        final offers = _FakeOffersRepository();
+
+        await _pumpHome(
+          tester,
+          rides: rides,
+          operations: operations,
+          offers: offers,
+        );
+        await tester.pump();
+
+        final dynamic state = tester.state(find.byType(DriverHomeScreen));
+        expect(state.debugLastPosition, isNotNull);
+        expect(state.debugMyLocationSafe, isTrue);
+
+        state.debugSetGpsStatus(DriverGpsStatus.permissionDenied);
+        await tester.pump();
+
+        // La Position vieja sigue cacheada, pero ya no es seguro
+        // activar el punto azul nativo.
+        expect(state.debugLastPosition, isNotNull);
+        expect(state.debugMyLocationSafe, isFalse);
+
+        final map = tester.widget<GoogleMap>(find.byType(GoogleMap));
+        expect(map.myLocationEnabled, isFalse);
+      },
+    );
+
+    testWidgets(
+      'D: permissionDeniedForever → myLocationEnabled queda en false',
+      (tester) async {
+        final rides = _FakeRidesRepository();
+        final operations = _FakeOperationsRepository(
+          statusQueue: [
+            const DriverOperationalState(
+              status: DriverOperationalStatus.available,
+            ),
+          ],
+        );
+        final offers = _FakeOffersRepository();
+
+        await _pumpHome(
+          tester,
+          rides: rides,
+          operations: operations,
+          offers: offers,
+        );
+        await tester.pump();
+
+        final dynamic state = tester.state(find.byType(DriverHomeScreen));
+
+        state.debugSetGpsStatus(DriverGpsStatus.permissionDeniedForever);
+        await tester.pump();
+
+        expect(state.debugMyLocationSafe, isFalse);
+      },
+    );
+
+    testWidgets('serviceDisabled → myLocationEnabled queda en false', (
+      tester,
+    ) async {
+      final rides = _FakeRidesRepository();
+      final operations = _FakeOperationsRepository(
+        statusQueue: [
+          const DriverOperationalState(
+            status: DriverOperationalStatus.available,
+          ),
+        ],
+      );
+      final offers = _FakeOffersRepository();
+
+      await _pumpHome(
+        tester,
+        rides: rides,
+        operations: operations,
+        offers: offers,
+      );
+      await tester.pump();
+
+      final dynamic state = tester.state(find.byType(DriverHomeScreen));
+
+      state.debugSetGpsStatus(DriverGpsStatus.serviceDisabled);
+      await tester.pump();
+
+      expect(state.debugMyLocationSafe, isFalse);
+    });
+
+    testWidgets(
+      'J: el bottom sheet OFFLINE ya no contiene el icono power redundante',
+      (tester) async {
+        final rides = _FakeRidesRepository();
+        final operations = _FakeOperationsRepository(
+          statusQueue: [
+            const DriverOperationalState(
+              status: DriverOperationalStatus.offline,
+            ),
+          ],
+        );
+        final offers = _FakeOffersRepository();
+
+        await _pumpHome(
+          tester,
+          rides: rides,
+          operations: operations,
+          offers: offers,
+        );
+        await tester.pump();
+
+        // Antes había 3 apariciones de este icono en OFFLINE: el
+        // fallback del mapa + el círculo redundante sobre el título
+        // del sheet + el del botón "Conectarme". El círculo del
+        // sheet ya no debe estar: solo quedan mapa + botón.
+        expect(find.byIcon(Icons.power_settings_new), findsNWidgets(2));
+      },
+    );
+
+    testWidgets(
+      'K: "Estás desconectado" sigue presente tras quitar el icono redundante',
+      (tester) async {
+        final rides = _FakeRidesRepository();
+        final operations = _FakeOperationsRepository(
+          statusQueue: [
+            const DriverOperationalState(
+              status: DriverOperationalStatus.offline,
+            ),
+          ],
+        );
+        final offers = _FakeOffersRepository();
+
+        await _pumpHome(
+          tester,
+          rides: rides,
+          operations: operations,
+          offers: offers,
+        );
+        await tester.pump();
+
+        expect(find.text('Estás desconectado'), findsWidgets);
+        expect(
+          find.text('Conéctate para comenzar a recibir solicitudes'),
+          findsOneWidget,
+        );
+        expect(find.text('Conectarme'), findsOneWidget);
+      },
+    );
+  });
+
+  group('Viewport del mapa (geometría física, sin padding dinámico)', () {
+    testWidgets(
+      'K/L/M: el mapa ocupa una región física acotada — no Positioned.fill '
+      'detrás de todo el bottom sheet — y GoogleMap.padding es zero',
+      (tester) async {
+        tester.view.physicalSize = const Size(390, 844);
+        tester.view.devicePixelRatio = 1;
+        addTearDown(tester.view.resetPhysicalSize);
+        addTearDown(tester.view.resetDevicePixelRatio);
+
+        final rides = _FakeRidesRepository();
+        final operations = _FakeOperationsRepository(
+          statusQueue: [
+            const DriverOperationalState(
+              status: DriverOperationalStatus.available,
+            ),
+          ],
+        );
+        final offers = _FakeOffersRepository();
+
+        await _pumpHome(
+          tester,
+          rides: rides,
+          operations: operations,
+          offers: offers,
+        );
+        await tester.pump();
+
+        final mapSize = tester.getSize(find.byType(GoogleMap));
+
+        // El mapa ya NO llena el alto disponible: ocupa una franja
+        // física acotada (L), no un Positioned.fill detrás de todo
+        // el bottom sheet.
+        expect(mapSize.height, lessThan(844 * 0.6));
+        expect(mapSize.height, greaterThanOrEqualTo(200));
+
+        // M: sin padding dinámico dependiente del alto del sheet.
+        final map = tester.widget<GoogleMap>(find.byType(GoogleMap));
+        expect(map.padding, EdgeInsets.zero);
+      },
+    );
+
+    testWidgets(
+      'O/Q: auto-center usa exactamente position.latitude/longitude, sin '
+      'offset geográfico — vía el cameraRequest declarativo',
+      (tester) async {
+        final rides = _FakeRidesRepository();
+        final operations = _FakeOperationsRepository(
+          statusQueue: [
+            const DriverOperationalState(
+              status: DriverOperationalStatus.available,
+            ),
+          ],
+        );
+        final offers = _FakeOffersRepository();
+
+        await _pumpHome(
+          tester,
+          rides: rides,
+          operations: operations,
+          offers: offers,
+        );
+        await tester.pump();
+
+        final dynamic state = tester.state(find.byType(DriverHomeScreen));
+        final request = state.debugCameraRequest as DriverMapCameraRequest?;
+
+        // Mismos valores exactos que _fakePosition() por defecto
+        // (-12.05 / -77.05): ni swap, ni rounding, ni offset.
+        expect(request, isNotNull);
+        expect(request!.target.latitude, -12.05);
+        expect(request.target.longitude, -77.05);
+
+        final map = tester.widget<GoogleMap>(find.byType(GoogleMap));
+        expect(map.initialCameraPosition.target.latitude, -12.05);
+        expect(map.initialCameraPosition.target.longitude, -77.05);
+      },
+    );
+
+    testWidgets(
+      'P/Q: recenter con Position fresca emite un cameraRequest nuevo con '
+      'esas mismas coordenadas exactas, sin offset geográfico',
+      (tester) async {
+        final rides = _FakeRidesRepository();
+        final operations = _FakeOperationsRepository(
+          statusQueue: [
+            const DriverOperationalState(
+              status: DriverOperationalStatus.available,
+            ),
+          ],
+        );
+        final offers = _FakeOffersRepository();
+
+        await _pumpHome(
+          tester,
+          rides: rides,
+          operations: operations,
+          offers: offers,
+        );
+        await tester.pump();
+
+        final dynamic state = tester.state(find.byType(DriverHomeScreen));
+        final idBeforeRecenter =
+            (state.debugCameraRequest as DriverMapCameraRequest?)?.id;
+
+        driverHomeGpsFetcherOverride = ({required requestPermission}) async {
+          return _fakePosition(lat: -8.5, lng: -74.9);
+        };
+
+        await tester.tap(
+          find.byKey(const ValueKey('driver-home-recenter-button')),
+        );
+        await tester.pump();
+        await tester.pump();
+
+        final request = state.debugCameraRequest as DriverMapCameraRequest?;
+
+        expect(request, isNotNull);
+        expect(request!.id, isNot(idBeforeRecenter));
+        expect(request.target.latitude, -8.5);
+        expect(request.target.longitude, -74.9);
+
+        final map = tester.widget<GoogleMap>(find.byType(GoogleMap));
+        expect(map.initialCameraPosition.target.latitude, -8.5);
+        expect(map.initialCameraPosition.target.longitude, -74.9);
+      },
+    );
+  });
+
+  group('Lifecycle: controller nunca sale de DriverHomeMap', () {
+    testWidgets(
+      'H: AVAILABLE → OFFLINE mantiene el GoogleMap montado (con la última '
+      'Position conocida), en vez de destruirlo y perder el controller',
+      (tester) async {
+        final rides = _FakeRidesRepository();
+        final operations = _FakeOperationsRepository(
+          statusQueue: [
+            const DriverOperationalState(
+              status: DriverOperationalStatus.available,
+            ),
+          ],
+        );
+        final offers = _FakeOffersRepository();
+
+        await _pumpHome(
+          tester,
+          rides: rides,
+          operations: operations,
+          offers: offers,
+        );
+        await tester.pump();
+
+        expect(find.byType(GoogleMap), findsOneWidget);
+
+        await tester.ensureVisible(find.text('Desconectarme'));
+        await tester.tap(find.text('Desconectarme'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 50));
+
+        expect(tester.takeException(), isNull);
+
+        final dynamic state = tester.state(find.byType(DriverHomeScreen));
+        expect(state.debugStatus, DriverHomeStatus.offline);
+
+        // El mapa sigue vivo: Home ya no destruye DriverHomeMap solo
+        // por pasar a OFFLINE (ni conserva ni pierde un controller,
+        // porque nunca lo tuvo). Ahora queda oculto detrás del overlay
+        // opaco, pero el widget real sigue montado.
+        expect(find.byType(GoogleMap), findsOneWidget);
+        expect(find.text('Estás desconectado'), findsOneWidget);
+      },
+    );
+
+    testWidgets(
+      'I: OFFLINE → AVAILABLE de nuevo emite un cameraRequest nuevo y sigue '
+      'usando el mismo GoogleMap (nunca se recreó)',
+      (tester) async {
+        final rides = _FakeRidesRepository();
+        final operations = _FakeOperationsRepository(
+          statusQueue: [
+            const DriverOperationalState(
+              status: DriverOperationalStatus.available,
+            ),
+          ],
+        );
+        final offers = _FakeOffersRepository();
+
+        await _pumpHome(
+          tester,
+          rides: rides,
+          operations: operations,
+          offers: offers,
+        );
+        await tester.pump();
+
+        final dynamic state = tester.state(find.byType(DriverHomeScreen));
+        final firstRequestId =
+            (state.debugCameraRequest as DriverMapCameraRequest?)?.id;
+
+        await tester.ensureVisible(find.text('Desconectarme'));
+        await tester.tap(find.text('Desconectarme'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 50));
+
+        await tester.ensureVisible(find.text('Conectarme'));
+        await tester.tap(find.text('Conectarme'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 50));
+        await tester.pump(const Duration(milliseconds: 50));
+
+        expect(tester.takeException(), isNull);
+        expect(state.debugStatus, DriverHomeStatus.available);
+        expect(find.byType(GoogleMap), findsOneWidget);
+
+        final secondRequestId =
+            (state.debugCameraRequest as DriverMapCameraRequest?)?.id;
+
+        expect(secondRequestId, isNot(firstRequestId));
+      },
+    );
+
+    testWidgets(
+      'J: 3 ciclos Conectarme→Desconectarme→Conectarme consecutivos no '
+      'producen ninguna excepción (ni Bad state, ni ninguna otra)',
+      (tester) async {
+        final rides = _FakeRidesRepository();
+        final operations = _FakeOperationsRepository(
+          statusQueue: [
+            const DriverOperationalState(
+              status: DriverOperationalStatus.offline,
+            ),
+          ],
+        );
+        final offers = _FakeOffersRepository();
+
+        await _pumpHome(
+          tester,
+          rides: rides,
+          operations: operations,
+          offers: offers,
+        );
+        await tester.pump();
+
+        expect(find.text('Estás desconectado'), findsOneWidget);
+        // Todavía sin Position: el fallback preservado, sin mapa real.
+        expect(find.byType(GoogleMap), findsNothing);
+
+        final dynamic state = tester.state(find.byType(DriverHomeScreen));
+
+        for (var cycle = 0; cycle < 3; cycle++) {
+          await tester.ensureVisible(find.text('Conectarme'));
+          await tester.tap(find.text('Conectarme')); // Conectarme.
+          await tester.pump();
+          await tester.pump(const Duration(milliseconds: 50));
+          await tester.pump(const Duration(milliseconds: 50));
+
+          expect(
+            tester.takeException(),
+            isNull,
+            reason: 'ciclo $cycle: connect',
+          );
+          expect(state.debugStatus, DriverHomeStatus.available);
+          expect(find.byType(GoogleMap), findsOneWidget);
+
+          await tester.ensureVisible(find.text('Desconectarme'));
+          await tester.tap(find.text('Desconectarme')); // Desconectarme.
+          await tester.pump();
+          await tester.pump(const Duration(milliseconds: 50));
+
+          expect(
+            tester.takeException(),
+            isNull,
+            reason: 'ciclo $cycle: disconnect',
+          );
+          expect(state.debugStatus, DriverHomeStatus.offline);
+
+          // A partir del primer connect, el mapa nunca se vuelve a
+          // destruir: sigue montado con la última Position conocida.
+          expect(find.byType(GoogleMap), findsOneWidget);
+        }
+      },
+    );
+  });
+
+  group('Overlay OFFLINE sobre el mapa vivo', () {
+    testWidgets(
+      'H: OFFLINE inicial (sin Position previa) muestra el fallback de '
+      'DriverHomeMap sin overlay duplicado encima',
+      (tester) async {
+        final rides = _FakeRidesRepository();
+        final operations = _FakeOperationsRepository(
+          statusQueue: [
+            const DriverOperationalState(
+              status: DriverOperationalStatus.offline,
+            ),
+          ],
+        );
+        final offers = _FakeOffersRepository();
+
+        await _pumpHome(
+          tester,
+          rides: rides,
+          operations: operations,
+          offers: offers,
+        );
+        await tester.pump();
+
+        expect(find.byType(GoogleMap), findsNothing);
+        // Una sola aparición: el propio fallback de DriverHomeMap. Si
+        // el overlay de Home también se dibujara acá, habría 2.
+        expect(
+          find.text('Conéctate para activar tu ubicación'),
+          findsOneWidget,
+        );
+      },
+    );
+
+    testWidgets(
+      'I/J: OFFLINE después de una Position previa oculta visualmente el '
+      'GoogleMap (overlay opaco con el mismo copy) y esconde el botón '
+      'de recentrar, sin destruir el mapa',
+      (tester) async {
+        final rides = _FakeRidesRepository();
+        final operations = _FakeOperationsRepository(
+          statusQueue: [
+            const DriverOperationalState(
+              status: DriverOperationalStatus.available,
+            ),
+          ],
+        );
+        final offers = _FakeOffersRepository();
+
+        await _pumpHome(
+          tester,
+          rides: rides,
+          operations: operations,
+          offers: offers,
+        );
+        await tester.pump();
+
+        // K/L: AVAILABLE — mapa y botón de recentrar visibles.
+        expect(find.byType(GoogleMap), findsOneWidget);
+        expect(
+          find.byKey(const ValueKey('driver-home-recenter-button')),
+          findsOneWidget,
+        );
+
+        await tester.ensureVisible(find.text('Desconectarme'));
+        await tester.tap(find.text('Desconectarme'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 50));
+
+        // El GoogleMap real SIGUE montado (no se destruyó)...
+        expect(find.byType(GoogleMap), findsOneWidget);
+        // ...pero el overlay opaco con el mismo copy de fallback lo
+        // cubre visualmente...
+        expect(
+          find.text('Conéctate para activar tu ubicación'),
+          findsOneWidget,
+        );
+        // ...y el botón de recentrar queda oculto: no hay forma de
+        // interactuar con un mapa que no se percibe.
+        expect(
+          find.byKey(const ValueKey('driver-home-recenter-button')),
+          findsNothing,
+        );
+      },
+    );
+
+    testWidgets(
+      'tocar sobre el área del overlay OFFLINE no lanza ninguna excepción '
+      '(el overlay absorbe el gesto en vez de dejarlo pasar al mapa)',
+      (tester) async {
+        final rides = _FakeRidesRepository();
+        final operations = _FakeOperationsRepository(
+          statusQueue: [
+            const DriverOperationalState(
+              status: DriverOperationalStatus.available,
+            ),
+          ],
+        );
+        final offers = _FakeOffersRepository();
+
+        await _pumpHome(
+          tester,
+          rides: rides,
+          operations: operations,
+          offers: offers,
+        );
+        await tester.pump();
+
+        await tester.ensureVisible(find.text('Desconectarme'));
+        await tester.tap(find.text('Desconectarme'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 50));
+
+        await tester.tap(
+          find.text('Conéctate para activar tu ubicación'),
+          warnIfMissed: false,
+        );
+        await tester.pump();
+
+        expect(tester.takeException(), isNull);
+
+        final dynamic state = tester.state(find.byType(DriverHomeScreen));
+        expect(state.debugStatus, DriverHomeStatus.offline);
+      },
+    );
+
+    testWidgets(
+      'M: AVAILABLE → OFFLINE conserva el MISMO State de DriverHomeMap '
+      '(no se destruye/recrea)',
+      (tester) async {
+        final rides = _FakeRidesRepository();
+        final operations = _FakeOperationsRepository(
+          statusQueue: [
+            const DriverOperationalState(
+              status: DriverOperationalStatus.available,
+            ),
+          ],
+        );
+        final offers = _FakeOffersRepository();
+
+        await _pumpHome(
+          tester,
+          rides: rides,
+          operations: operations,
+          offers: offers,
+        );
+        await tester.pump();
+
+        final stateBefore = tester.state(find.byType(DriverHomeMap));
+
+        await tester.ensureVisible(find.text('Desconectarme'));
+        await tester.tap(find.text('Desconectarme'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 50));
+
+        final stateAfter = tester.state(find.byType(DriverHomeMap));
+
+        expect(identical(stateBefore, stateAfter), isTrue);
+      },
+    );
+  });
+
+  group('Color crema único / sin franja residual', () {
+    testWidgets(
+      'P: Scaffold.backgroundColor y el fondo del bottom sheet usan la '
+      'MISMA constante DriverPalette.cream',
+      (tester) async {
+        final rides = _FakeRidesRepository();
+        final operations = _FakeOperationsRepository(
+          statusQueue: [
+            const DriverOperationalState(
+              status: DriverOperationalStatus.available,
+            ),
+          ],
+        );
+        final offers = _FakeOffersRepository();
+
+        await _pumpHome(
+          tester,
+          rides: rides,
+          operations: operations,
+          offers: offers,
+        );
+        await tester.pump();
+
+        final scaffold = tester.widget<Scaffold>(find.byType(Scaffold));
+        expect(scaffold.backgroundColor, DriverPalette.cream);
+
+        // El Container inmediato dentro de la SafeArea del sheet es
+        // el que pinta el fondo cream del sheet (borde redondeado +
+        // sombra). Se ubica por su BoxDecoration con ese color.
+        final sheetContainers = find.byWidgetPredicate((widget) {
+          if (widget is! Container) {
+            return false;
+          }
+
+          final decoration = widget.decoration;
+
+          return decoration is BoxDecoration &&
+              decoration.color == DriverPalette.cream &&
+              decoration.borderRadius != null;
+        });
+
+        expect(sheetContainers, findsWidgets);
+      },
+    );
+
+    testWidgets('Q: el código fuente ya no usa Matrix4.translationValues para '
+        'desplazar el bottom sheet', (tester) async {
+      final source = File(
+        'lib/features/driver/presentation/driver_home_screen.dart',
+      ).readAsStringSync();
+
+      expect(source.contains('Matrix4.translationValues'), isFalse);
+      expect(source.contains('transform:'), isFalse);
+    });
+  });
+
+  group('Responsive', () {
+    testWidgets('390x844 sin overflow en los estados principales', (
+      tester,
+    ) async {
+      tester.view.physicalSize = const Size(390, 844);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      await _runResponsiveScenarios(tester);
+    });
+
+    testWidgets('360x640 sin overflow en los estados principales', (
+      tester,
+    ) async {
+      tester.view.physicalSize = const Size(360, 640);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      await _runResponsiveScenarios(tester);
+    });
+
+    testWidgets('412x915 sin overflow en los estados principales', (
+      tester,
+    ) async {
+      tester.view.physicalSize = const Size(412, 915);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      await _runResponsiveScenarios(tester);
+    });
+  });
+}
+
+Future<void> _runResponsiveScenarios(WidgetTester tester) async {
+  // RESTORING: se queda pendiente indefinidamente (gate sin completar).
+  await _pumpAndExpectNoOverflow(
+    tester,
+    rides: _FakeRidesRepository()..gate = Completer<DriverActiveRide?>(),
+    operations: _FakeOperationsRepository(),
+    offers: _FakeOffersRepository(),
+  );
+
+  // OFFLINE: el bug real era que el texto del fallback quedaba
+  // cubierto por el bottom sheet sin producir overflow, por eso acá
+  // se verifica explícitamente que el texto sea visible, no solo
+  // que no haya overflow.
+  await _pumpAndExpectNoOverflow(
+    tester,
+    rides: _FakeRidesRepository(),
+    operations: _FakeOperationsRepository(
+      statusQueue: [
+        const DriverOperationalState(status: DriverOperationalStatus.offline),
+      ],
+    ),
+    offers: _FakeOffersRepository(),
+    extraChecks: () {
+      expect(find.text('Conéctate para activar tu ubicación'), findsOneWidget);
+    },
+  );
+
+  // AVAILABLE con stats, GPS y connectedAt (la vista más cargada).
+  await _pumpAndExpectNoOverflow(
+    tester,
+    rides: _FakeRidesRepository(),
+    operations: _FakeOperationsRepository(
+      statusQueue: [
+        DriverOperationalState(
+          status: DriverOperationalStatus.available,
+          connectedAt: DateTime.utc(2026, 8, 10, 9),
+        ),
+      ],
+      dailyStatsResult: DriverDailyStats.fromJson(const {
+        'businessDate': '2026-08-10',
+        'timezone': 'America/Lima',
+        'completedRides': 12,
+        'grossAmount': '145.90',
+        'currency': 'PEN',
+        'asOf': '2026-08-10T15:00:00.000Z',
+      }),
+    ),
+    offers: _FakeOffersRepository(),
+    extraChecks: () {
+      // Sin tarjeta superior ni switch: el botón custom de recentrar
+      // se sigue mostrando solo, sin solaparse ni desbordar en
+      // ninguno de los tamaños de pantalla probados.
+      expect(find.text('Estás en línea'), findsNothing);
+      expect(find.byType(Switch), findsNothing);
+      expect(
+        find.byKey(const ValueKey('driver-home-recenter-button')),
+        findsOneWidget,
+      );
+    },
+  );
+
+  // OFFERED.
+  await _pumpAndExpectNoOverflow(
+    tester,
+    rides: _FakeRidesRepository(),
+    operations: _FakeOperationsRepository(
+      statusQueue: [
+        const DriverOperationalState(status: DriverOperationalStatus.available),
+      ],
+    ),
+    offers: _FakeOffersRepository(
+      activeOffersQueue: [
+        [_offer()],
+      ],
+    ),
+  );
+
+  // PROPOSED múltiples.
+  await _pumpAndExpectNoOverflow(
+    tester,
+    rides: _FakeRidesRepository(),
+    operations: _FakeOperationsRepository(
+      statusQueue: [
+        const DriverOperationalState(status: DriverOperationalStatus.available),
+      ],
+    ),
+    offers: _FakeOffersRepository(
+      pendingProposalsQueue: [
+        [
+          _pendingProposal(offerId: 'offer-1'),
+          _pendingProposal(offerId: 'offer-2'),
+          _pendingProposal(offerId: 'offer-3'),
+        ],
+      ],
+    ),
+  );
+
+  // BUSY recovery.
+  await _pumpAndExpectNoOverflow(
+    tester,
+    rides: _FakeRidesRepository(activeRideQueue: [null, null]),
+    operations: _FakeOperationsRepository(
+      statusQueue: [
+        const DriverOperationalState(status: DriverOperationalStatus.busy),
+      ],
+    ),
+    offers: _FakeOffersRepository(),
+  );
+
+  // ERROR.
+  await _pumpAndExpectNoOverflow(
+    tester,
+    rides: _FakeRidesRepository(
+      activeRideQueue: [
+        DioException(
+          requestOptions: RequestOptions(path: 'drivers/me/rides/active'),
+          type: DioExceptionType.connectionError,
+        ),
+      ],
+    ),
+    operations: _FakeOperationsRepository(),
+    offers: _FakeOffersRepository(),
+  );
+}
+
+Future<void> _pumpAndExpectNoOverflow(
+  WidgetTester tester, {
+  required _FakeRidesRepository rides,
+  required _FakeOperationsRepository operations,
+  required _FakeOffersRepository offers,
+  void Function()? extraChecks,
+}) async {
+  await _pumpHome(tester, rides: rides, operations: operations, offers: offers);
+  await tester.pump();
+  await tester.pump(const Duration(milliseconds: 50));
+
+  expect(tester.takeException(), isNull);
+  extraChecks?.call();
+
+  await tester.pumpWidget(const SizedBox.shrink());
+  await tester.pump();
 }
 
 Future<void> _pumpHome(
@@ -1274,12 +2723,17 @@ DioException _dioError({
   );
 }
 
-Position _fakePosition({double lat = -12.05, double lng = -77.05}) {
+Position _fakePosition({
+  double lat = -12.05,
+  double lng = -77.05,
+  double accuracy = 8,
+  DateTime? timestamp,
+}) {
   return Position(
     latitude: lat,
     longitude: lng,
-    timestamp: DateTime.utc(2026, 8, 10),
-    accuracy: 8,
+    timestamp: timestamp ?? DateTime.utc(2026, 8, 10),
+    accuracy: accuracy,
     altitude: 0,
     altitudeAccuracy: 0,
     heading: 0,

@@ -2,6 +2,17 @@ plugins {
     id("com.android.application")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
     id("dev.flutter.flutter-gradle-plugin")
+    id("com.google.android.libraries.mapsplatform.secrets-gradle-plugin")
+}
+
+// Google Maps API key injection.
+//
+// Real key: android/secrets.properties (gitignored, developer-local, never committed).
+// Fallback used by CI/other developers when secrets.properties is absent:
+// android/local.defaults.properties (versioned, contains only a placeholder).
+secrets {
+    propertiesFileName = "secrets.properties"
+    defaultPropertiesFileName = "local.defaults.properties"
 }
 
 android {
