@@ -2,6 +2,7 @@ import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:go_router/go_router.dart';
 
 import 'package:driver/features/driver/data/driver_payments_repository.dart';
 import 'package:driver/features/driver/data/driver_rides_repository.dart';
@@ -11,6 +12,267 @@ import 'package:driver/features/driver/domain/driver_ride_payment.dart';
 import 'package:driver/features/driver/presentation/driver_cash_payment_screen.dart';
 
 void main() {
+  group('Checkpoint E: comprobante PAID', () {
+    testWidgets('A/B: header "Pago confirmado" y "¡Pago recibido!"', (
+      tester,
+    ) async {
+      final payments = _FakePaymentsRepository(
+        paymentResult: _paymentFixture(
+          amountDue: '17.00',
+          status: 'PAID',
+          cashReceived: '20.00',
+          changeGiven: '3.00',
+        ),
+      );
+
+      await _pumpCashPayment(tester, rideId: 'ride-1', payments: payments);
+      await tester.pump();
+
+      expect(find.text('Pago confirmado'), findsOneWidget);
+      expect(find.text('¡Pago recibido!'), findsOneWidget);
+    });
+
+    testWidgets('C: TOTAL COBRADO usa payment.amountDue', (tester) async {
+      final payments = _FakePaymentsRepository(
+        paymentResult: _paymentFixture(
+          amountDue: '17.00',
+          status: 'PAID',
+          cashReceived: '20.00',
+          changeGiven: '3.00',
+        ),
+      );
+
+      await _pumpCashPayment(tester, rideId: 'ride-1', payments: payments);
+      await tester.pump();
+
+      expect(find.text('TOTAL COBRADO'), findsOneWidget);
+      expect(find.text('S/ 17.00'), findsAtLeastNWidgets(1));
+    });
+
+    testWidgets('D: método de pago muestra Efectivo para CASH', (
+      tester,
+    ) async {
+      final payments = _FakePaymentsRepository(
+        paymentResult: _paymentFixture(
+          amountDue: '17.00',
+          status: 'PAID',
+          cashReceived: '20.00',
+          changeGiven: '3.00',
+        ),
+      );
+
+      await _pumpCashPayment(tester, rideId: 'ride-1', payments: payments);
+      await tester.pump();
+
+      expect(find.text('Efectivo'), findsOneWidget);
+    });
+
+    testWidgets('E/F: cashReceived y changeGiven reales', (tester) async {
+      final payments = _FakePaymentsRepository(
+        paymentResult: _paymentFixture(
+          amountDue: '17.00',
+          status: 'PAID',
+          cashReceived: '20.00',
+          changeGiven: '3.00',
+        ),
+      );
+
+      await _pumpCashPayment(tester, rideId: 'ride-1', payments: payments);
+      await tester.pump();
+
+      expect(find.text('Efectivo recibido'), findsOneWidget);
+      expect(find.text('S/ 20.00'), findsOneWidget);
+      expect(find.text('Vuelto entregado'), findsOneWidget);
+      expect(find.text('S/ 3.00'), findsOneWidget);
+    });
+
+    testWidgets('G/H: estado visual PAGADO, nunca el raw PAID', (
+      tester,
+    ) async {
+      final payments = _FakePaymentsRepository(
+        paymentResult: _paymentFixture(
+          amountDue: '17.00',
+          status: 'PAID',
+          cashReceived: '20.00',
+          changeGiven: '3.00',
+        ),
+      );
+
+      await _pumpCashPayment(tester, rideId: 'ride-1', payments: payments);
+      await tester.pump();
+
+      expect(find.text('PAGADO'), findsOneWidget);
+      expect(find.text('PAID'), findsNothing);
+    });
+
+    testWidgets('I/J: CTA es "Volver al inicio", nunca "Finalizar"', (
+      tester,
+    ) async {
+      final payments = _FakePaymentsRepository(
+        paymentResult: _paymentFixture(
+          amountDue: '17.00',
+          status: 'PAID',
+          cashReceived: '20.00',
+          changeGiven: '3.00',
+        ),
+      );
+
+      await _pumpCashPayment(tester, rideId: 'ride-1', payments: payments);
+      await tester.pump();
+
+      expect(find.text('Volver al inicio'), findsOneWidget);
+      expect(find.text('Finalizar'), findsNothing);
+    });
+
+    testWidgets(
+      'nullable: cashReceived/changeGiven null no inventan S/ 0.00',
+      (tester) async {
+        final payments = _FakePaymentsRepository(
+          paymentResult: _paymentFixture(amountDue: '17.00', status: 'PAID'),
+        );
+
+        await _pumpCashPayment(tester, rideId: 'ride-1', payments: payments);
+        await tester.pump();
+
+        expect(find.text('Efectivo recibido'), findsNothing);
+        expect(find.text('Vuelto entregado'), findsNothing);
+        expect(find.text('S/ 0.00'), findsNothing);
+      },
+    );
+
+    testWidgets('vuelto real en cero sí se muestra (dato real, no inventado)', (
+      tester,
+    ) async {
+      final payments = _FakePaymentsRepository(
+        paymentResult: _paymentFixture(
+          amountDue: '5.00',
+          status: 'PAID',
+          cashReceived: '5.00',
+          changeGiven: '0.00',
+        ),
+      );
+
+      await _pumpCashPayment(tester, rideId: 'ride-1', payments: payments);
+      await tester.pump();
+
+      expect(find.text('Vuelto entregado'), findsOneWidget);
+      expect(find.text('S/ 0.00'), findsOneWidget);
+    });
+
+    testWidgets(
+      'CTA "Volver al inicio" no llama confirmCash/getPayment de nuevo',
+      (tester) async {
+        final payments = _FakePaymentsRepository(
+          paymentResult: _paymentFixture(
+            amountDue: '17.00',
+            status: 'PAID',
+            cashReceived: '20.00',
+            changeGiven: '3.00',
+          ),
+        );
+
+        final router = GoRouter(
+          initialLocation: '/cash-payment/ride-1',
+          routes: [
+            GoRoute(
+              path: '/cash-payment/:rideId',
+              builder: (context, state) => DriverCashPaymentScreen(
+                rideId: state.pathParameters['rideId']!,
+              ),
+            ),
+            GoRoute(
+              path: '/home',
+              builder: (context, state) =>
+                  const Scaffold(body: Text('HOME_ROUTE')),
+            ),
+          ],
+        );
+        addTearDown(router.dispose);
+
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [
+              driverPaymentsRepositoryProvider.overrideWithValue(payments),
+              driverRidesRepositoryProvider.overrideWithValue(
+                _FakeRidesRepositoryForCash(),
+              ),
+            ],
+            child: MaterialApp.router(routerConfig: router),
+          ),
+        );
+        await tester.pump();
+
+        expect(payments.getPaymentCalls, 1);
+        expect(payments.confirmCalls, 0);
+
+        await tester.ensureVisible(find.text('Volver al inicio'));
+        await tester.tap(find.text('Volver al inicio'));
+        await tester.pumpAndSettle();
+
+        expect(find.text('HOME_ROUTE'), findsOneWidget);
+        expect(payments.getPaymentCalls, 1);
+        expect(payments.confirmCalls, 0);
+      },
+    );
+
+    testWidgets(
+      'CTA "Volver al inicio" limpia el back stack (go, no push)',
+      (tester) async {
+        final payments = _FakePaymentsRepository(
+          paymentResult: _paymentFixture(
+            amountDue: '17.00',
+            status: 'PAID',
+            cashReceived: '20.00',
+            changeGiven: '3.00',
+          ),
+        );
+
+        final router = GoRouter(
+          initialLocation: '/cash-payment/ride-1',
+          routes: [
+            GoRoute(
+              path: '/cash-payment/:rideId',
+              builder: (context, state) => DriverCashPaymentScreen(
+                rideId: state.pathParameters['rideId']!,
+              ),
+            ),
+            GoRoute(
+              path: '/home',
+              builder: (context, state) =>
+                  const Scaffold(body: Text('HOME_ROUTE')),
+            ),
+          ],
+        );
+        addTearDown(router.dispose);
+
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [
+              driverPaymentsRepositoryProvider.overrideWithValue(payments),
+              driverRidesRepositoryProvider.overrideWithValue(
+                _FakeRidesRepositoryForCash(),
+              ),
+            ],
+            child: MaterialApp.router(routerConfig: router),
+          ),
+        );
+        await tester.pump();
+
+        await tester.ensureVisible(find.text('Volver al inicio'));
+        await tester.tap(find.text('Volver al inicio'));
+        await tester.pumpAndSettle();
+
+        expect(find.text('HOME_ROUTE'), findsOneWidget);
+
+        final navigator = tester.state<NavigatorState>(
+          find.byType(Navigator).first,
+        );
+
+        expect(navigator.canPop(), isFalse);
+      },
+    );
+  });
+
   group('TOTAL A COBRAR y quick amounts', () {
     testWidgets('A: TOTAL A COBRAR usa amountDue real', (tester) async {
       final payments = _FakePaymentsRepository(
@@ -460,6 +722,41 @@ void main() {
       );
     });
   });
+
+  group('Checkpoint E: responsive comprobante PAID', () {
+    testWidgets('360x640 sin overflow', (tester) async {
+      await _pumpPaidResponsive(tester, const Size(360, 640));
+    });
+
+    testWidgets('390x844 sin overflow', (tester) async {
+      await _pumpPaidResponsive(tester, const Size(390, 844));
+    });
+
+    testWidgets('412x915 sin overflow', (tester) async {
+      await _pumpPaidResponsive(tester, const Size(412, 915));
+    });
+  });
+}
+
+Future<void> _pumpPaidResponsive(WidgetTester tester, Size size) async {
+  tester.view.physicalSize = size;
+  tester.view.devicePixelRatio = 1.0;
+  addTearDown(tester.view.resetPhysicalSize);
+  addTearDown(tester.view.resetDevicePixelRatio);
+
+  final payments = _FakePaymentsRepository(
+    paymentResult: _paymentFixture(
+      amountDue: '123.45',
+      status: 'PAID',
+      cashReceived: '200.00',
+      changeGiven: '156.55',
+    ),
+  );
+
+  await _pumpCashPayment(tester, rideId: 'ride-1', payments: payments);
+  await tester.pump();
+
+  expect(tester.takeException(), isNull);
 }
 
 Future<void> _pumpCashPayment(

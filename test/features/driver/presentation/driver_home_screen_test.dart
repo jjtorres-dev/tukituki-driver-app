@@ -2676,6 +2676,114 @@ void main() {
     });
   });
 
+  group('Checkpoint E: retorno post-PAID (Backend es autoridad)', () {
+    testWidgets(
+      'sin active ride ni pending payments y status AVAILABLE: '
+      'Home muestra "Estás disponible"',
+      (tester) async {
+        final rides = _FakeRidesRepository(
+          activeRideQueue: [null],
+          pendingPaymentsQueue: const [[]],
+        );
+        final connectedAt = DateTime.utc(2026, 8, 10, 9);
+        final operations = _FakeOperationsRepository(
+          statusQueue: [
+            DriverOperationalState(
+              status: DriverOperationalStatus.available,
+              connectedAt: connectedAt,
+              lastSeenAt: connectedAt,
+            ),
+          ],
+          heartbeatQueue: [
+            DriverOperationalState(
+              status: DriverOperationalStatus.available,
+              connectedAt: connectedAt,
+              lastSeenAt: connectedAt,
+            ),
+          ],
+        );
+        final offers = _FakeOffersRepository();
+
+        await _pumpHome(
+          tester,
+          rides: rides,
+          operations: operations,
+          offers: offers,
+        );
+        await tester.pump();
+
+        expect(find.text('Estás disponible'), findsOneWidget);
+        expect(find.text('Estás desconectado'), findsNothing);
+      },
+    );
+
+    testWidgets(
+      'sin active ride ni pending payments y status OFFLINE: '
+      'Home muestra "Estás desconectado" (no se fuerza AVAILABLE)',
+      (tester) async {
+        final rides = _FakeRidesRepository(
+          activeRideQueue: [null],
+          pendingPaymentsQueue: const [[]],
+        );
+        final operations = _FakeOperationsRepository(
+          statusQueue: [
+            const DriverOperationalState(
+              status: DriverOperationalStatus.offline,
+            ),
+          ],
+        );
+        final offers = _FakeOffersRepository();
+
+        await _pumpHome(
+          tester,
+          rides: rides,
+          operations: operations,
+          offers: offers,
+        );
+        await tester.pump();
+
+        expect(find.text('Estás desconectado'), findsWidgets);
+        expect(find.text('Estás disponible'), findsNothing);
+      },
+    );
+
+    testWidgets(
+      'múltiples CASH PENDING previos: un pago resuelto no oculta el '
+      'restante (no se limpia la lista completa localmente)',
+      (tester) async {
+        final rides = _FakeRidesRepository(
+          activeRideQueue: [null],
+          pendingPaymentsQueue: [
+            [
+              _pendingPaymentFixture(
+                rideId: 'ride-b-pending',
+                method: 'CASH',
+                status: 'PENDING',
+              ),
+            ],
+          ],
+        );
+        final operations = _FakeOperationsRepository();
+        final offers = _FakeOffersRepository();
+
+        await _pumpHome(
+          tester,
+          rides: rides,
+          operations: operations,
+          offers: offers,
+        );
+        await tester.pump();
+        await tester.pump();
+
+        expect(
+          find.text('COMPLETED_PAYMENT_ROUTE ride-b-pending'),
+          findsOneWidget,
+        );
+        expect(operations.getStatusCalls, 0);
+      },
+    );
+  });
+
   group('Responsive', () {
     testWidgets('390x844 sin overflow en los estados principales', (
       tester,

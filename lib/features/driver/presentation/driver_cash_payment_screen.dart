@@ -11,6 +11,7 @@ import '../data/driver_payments_repository.dart';
 import '../data/driver_rides_repository.dart';
 import '../domain/driver_money.dart';
 import '../domain/driver_ride_payment.dart';
+import 'driver_ride_completion_view.dart' show paymentMethodLabel;
 
 class DriverCashPaymentScreen extends ConsumerStatefulWidget {
   const DriverCashPaymentScreen({required this.rideId, super.key});
@@ -326,25 +327,47 @@ class _DriverCashPaymentScreenState
             children: [
               const SizedBox(height: 16),
 
-              Icon(
-                paid ? Icons.check_circle : Icons.payments,
-                size: 72,
-                color: paid ? DriverPalette.greenAvailable : DriverPalette.amber,
-              ),
+              if (paid) ...[
+                _PaidHeroCard(amountDue: payment.amountDue),
 
-              const SizedBox(height: 20),
+                const SizedBox(height: 24),
 
-              Text(
-                paid ? '¡Pago recibido!' : 'Cobro en efectivo',
-                textAlign: TextAlign.center,
-                style: const TextStyle(
-                  fontSize: 26,
-                  fontWeight: FontWeight.w800,
-                  color: DriverPalette.greenPrimary,
+                _PaidReceiptCard(payment: payment),
+
+                const SizedBox(height: 24),
+
+                FilledButton.icon(
+                  onPressed: () {
+                    context.go('/home');
+                  },
+                  style: FilledButton.styleFrom(
+                    backgroundColor: DriverPalette.greenPrimary,
+                  ),
+                  icon: const Icon(Icons.home),
+                  label: const Padding(
+                    padding: EdgeInsets.symmetric(vertical: 16),
+                    child: Text('Volver al inicio'),
+                  ),
                 ),
-              ),
+              ] else ...[
+                const Icon(
+                  Icons.payments,
+                  size: 72,
+                  color: DriverPalette.amber,
+                ),
 
-              if (!paid) ...[
+                const SizedBox(height: 20),
+
+                const Text(
+                  'Cobro en efectivo',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    fontSize: 26,
+                    fontWeight: FontWeight.w800,
+                    color: DriverPalette.greenPrimary,
+                  ),
+                ),
+
                 const SizedBox(height: 8),
                 Text(
                   _passengerFirstName != null
@@ -354,13 +377,11 @@ class _DriverCashPaymentScreenState
                   textAlign: TextAlign.center,
                   style: const TextStyle(color: DriverPalette.brown),
                 ),
-              ],
 
-              const SizedBox(height: 24),
+                const SizedBox(height: 24),
 
-              _TotalDueCard(amountDue: payment.amountDue),
+                _TotalDueCard(amountDue: payment.amountDue),
 
-              if (!paid) ...[
                 const SizedBox(height: 24),
 
                 TextField(
@@ -434,57 +455,202 @@ class _DriverCashPaymentScreenState
                   ),
                 ),
               ],
-
-              if (paid) ...[
-                const SizedBox(height: 24),
-                Card(
-                  child: Padding(
-                    padding: const EdgeInsets.all(22),
-                    child: Column(
-                      children: [
-                        _PaymentRow(
-                          label: 'Tarifa del viaje',
-                          value: 'S/ ${payment.amountDue}',
-                        ),
-
-                        const Divider(),
-
-                        _PaymentRow(
-                          label: 'Efectivo recibido',
-                          value: 'S/ ${payment.cashReceived ?? '0.00'}',
-                        ),
-
-                        const Divider(),
-
-                        _PaymentRow(
-                          label: 'Vuelto',
-                          value: 'S/ ${payment.changeGiven ?? '0.00'}',
-                        ),
-
-                        const Divider(),
-
-                        _PaymentRow(label: 'Estado', value: payment.status),
-                      ],
-                    ),
-                  ),
-                ),
-
-                const SizedBox(height: 24),
-
-                FilledButton.icon(
-                  onPressed: () {
-                    context.go('/home');
-                  },
-                  icon: const Icon(Icons.home),
-                  label: const Padding(
-                    padding: EdgeInsets.symmetric(vertical: 16),
-                    child: Text('Finalizar'),
-                  ),
-                ),
-              ],
             ],
           ),
         ),
+      ),
+    );
+  }
+}
+
+/// Tarjeta principal del recibo PAID: check amarillo sobre verde
+/// oscuro, "¡Pago recibido!" y el TOTAL COBRADO real
+/// (`payment.amountDue`, el monto que el pasajero terminó pagando).
+class _PaidHeroCard extends StatelessWidget {
+  const _PaidHeroCard({required this.amountDue});
+
+  final String amountDue;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(vertical: 28, horizontal: 20),
+      decoration: BoxDecoration(
+        color: DriverPalette.greenPrimary,
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Column(
+        children: [
+          Container(
+            width: 64,
+            height: 64,
+            decoration: BoxDecoration(
+              color: DriverPalette.amber.withValues(alpha: 0.24),
+              shape: BoxShape.circle,
+            ),
+            child: const Icon(
+              Icons.check,
+              color: DriverPalette.amber,
+              size: 36,
+            ),
+          ),
+
+          const SizedBox(height: 16),
+
+          const Text(
+            '¡Pago recibido!',
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              fontSize: 24,
+              fontWeight: FontWeight.w800,
+              color: Colors.white,
+            ),
+          ),
+
+          const SizedBox(height: 20),
+
+          const Text(
+            'TOTAL COBRADO',
+            style: TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w700,
+              letterSpacing: 0.6,
+              color: DriverPalette.amberLight,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            'S/ $amountDue',
+            style: const TextStyle(
+              fontSize: 40,
+              fontWeight: FontWeight.w800,
+              color: Colors.white,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Comprobante final del cobro. `finalFare` del Ride no está
+/// disponible de forma segura en esta pantalla (`getPayment` solo
+/// expone `DriverRidePayment`; `getRide` es best-effort y solo se usa
+/// para el nombre del Passenger), así que la fila usa el contrato
+/// real de esta pantalla: `payment.amountDue`, con una etiqueta
+/// neutral ("Monto del viaje") en vez de asumir que es la tarifa
+/// final exacta del Ride.
+class _PaidReceiptCard extends StatelessWidget {
+  const _PaidReceiptCard({required this.payment});
+
+  final DriverRidePayment payment;
+
+  @override
+  Widget build(BuildContext context) {
+    final cashReceived = payment.cashReceived;
+    final changeGiven = payment.changeGiven;
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(22),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Column(
+        children: [
+          _PaymentRow(
+            label: 'Monto del viaje',
+            value: 'S/ ${payment.amountDue}',
+          ),
+
+          const Divider(),
+
+          _PaymentRow(
+            label: 'Método de pago',
+            value: paymentMethodLabel(payment.method),
+          ),
+
+          if (cashReceived != null) ...[
+            const Divider(),
+            _PaymentRow(
+              label: 'Efectivo recibido',
+              value: 'S/ $cashReceived',
+            ),
+          ],
+
+          if (changeGiven != null) ...[
+            const Divider(),
+            _PaymentRow(label: 'Vuelto entregado', value: 'S/ $changeGiven'),
+          ],
+
+          const Divider(),
+
+          _PaidStatusRow(status: payment.status),
+        ],
+      ),
+    );
+  }
+}
+
+class _PaidStatusRow extends StatelessWidget {
+  const _PaidStatusRow({required this.status});
+
+  /// Solo se renderiza el badge "PAGADO" cuando el contrato real es
+  /// `PAID`. Un valor inesperado (defensivo: este widget solo se usa
+  /// dentro de la rama ya validada `paid == true`) cae al raw status
+  /// en vez de afirmar "PAGADO" sin soporte real.
+  final String status;
+
+  @override
+  Widget build(BuildContext context) {
+    if (status != 'PAID') {
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 8),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            const Text('Estado'),
+            Text(status, style: const TextStyle(fontWeight: FontWeight.bold)),
+          ],
+        ),
+      );
+    }
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          const Text('Estado'),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+            decoration: BoxDecoration(
+              color: DriverPalette.greenAvailable.withValues(alpha: 0.16),
+              borderRadius: BorderRadius.circular(20),
+            ),
+            child: const Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  Icons.check_circle,
+                  size: 14,
+                  color: DriverPalette.greenAvailable,
+                ),
+                SizedBox(width: 4),
+                Text(
+                  'PAGADO',
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w800,
+                    color: DriverPalette.greenAvailable,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -676,8 +842,16 @@ class _PaymentRow extends StatelessWidget {
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          Text(label),
-          Text(value, style: const TextStyle(fontWeight: FontWeight.bold)),
+          Flexible(child: Text(label, overflow: TextOverflow.ellipsis)),
+          const SizedBox(width: 12),
+          Flexible(
+            child: Text(
+              value,
+              textAlign: TextAlign.right,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontWeight: FontWeight.bold),
+            ),
+          ),
         ],
       ),
     );
