@@ -16,6 +16,7 @@ import '../domain/driver_active_ride.dart';
 import '../domain/driver_assigned_passenger.dart';
 import '../domain/driver_ride_completion.dart';
 import 'driver_home_map.dart';
+import 'driver_post_ride_presence.dart';
 import 'driver_ride_completion_view.dart';
 
 class _DriverLocationFailure implements Exception {
@@ -75,6 +76,16 @@ class _DriverActiveRideScreenState
   Timer? _rideTimer;
   Timer? _activityTimer;
 
+  /// Heartbeat presence-only (Checkpoint F1), activo únicamente
+  /// mientras se muestra la vista "¡Viaje completado!" (después de
+  /// `_activityTimer` cancelarse, justo antes de `complete`). Nunca
+  /// coexiste con `_activityTimer`: uno reemplaza al otro según el
+  /// Ride siga IN_PROGRESS o ya esté COMPLETED.
+  DriverPostRidePresence? _postRidePresence;
+
+  @visibleForTesting
+  bool get debugPostRidePresenceActive => _postRidePresence != null;
+
   /// Última posición real conocida del propio Driver, solo para
   /// representarla en el mapa del ride activo (punto azul nativo) y
   /// para encuadrar la cámara junto al pickup. Nunca se fabrica: solo
@@ -125,6 +136,7 @@ class _DriverActiveRideScreenState
   void dispose() {
     _rideTimer?.cancel();
     _activityTimer?.cancel();
+    _postRidePresence?.dispose();
 
     _codeController.removeListener(_handleCodeChanged);
     _codeController.dispose();
@@ -843,6 +855,14 @@ class _DriverActiveRideScreenState
       setState(() {
         _completion = completion;
       });
+
+      // El Ride ya está COMPLETED: no hay más `_activityTimer`
+      // (GPS+heartbeat) para este viaje. Mantenemos `lastSeenAt`
+      // vivo mientras el Driver ve "¡Viaje completado!" y decide
+      // cobrar, sin publicar ubicación ni decidir disponibilidad.
+      _postRidePresence = DriverPostRidePresence(
+        repository: ref.read(driverOperationsRepositoryProvider),
+      );
     } on _DriverLocationFailure catch (error) {
       debugPrint(
         'DRIVER COMPLETE LOCATION ERROR '

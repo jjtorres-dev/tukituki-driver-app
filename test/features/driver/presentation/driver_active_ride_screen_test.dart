@@ -1373,12 +1373,13 @@ void main() {
     Future<void> pumpCompletion(
       WidgetTester tester, {
       required DriverRideCompletion completion,
+      _FakeOperationsRepository? operations,
     }) async {
       final ride = _rideFixture(status: 'IN_PROGRESS');
       final rides = _FakeRidesRepository(activeRideQueue: [ride])
         ..completeRideQueue = [completion];
 
-      await _pumpActiveRide(tester, rides: rides);
+      await _pumpActiveRide(tester, rides: rides, operations: operations);
       await tester.pump();
 
       await tester.ensureVisible(
@@ -1395,6 +1396,141 @@ void main() {
       await pumpCompletion(tester, completion: _completionFixture());
 
       expect(find.text('¡Viaje completado!'), findsOneWidget);
+    });
+
+    group('Checkpoint F1: presence heartbeat post-ride', () {
+      testWidgets(
+        'heartbeat arranca al completar y avanza cada ~30s (sin GPS)',
+        (tester) async {
+          final operations = _FakeOperationsRepository();
+
+          await pumpCompletion(
+            tester,
+            completion: _completionFixture(),
+            operations: operations,
+          );
+
+          // `_activityTimer` ya envió su heartbeat+location final
+          // antes de `complete`. Contamos desde que la vista
+          // COMPLETED ya está montada.
+          final baseline = operations.heartbeatCalls;
+          final locationBaseline = operations.updateLocationCalls;
+
+          await tester.pump(const Duration(seconds: 30));
+
+          expect(operations.heartbeatCalls, baseline + 1);
+          // Ningún heartbeat post-ride publica ubicación.
+          expect(operations.updateLocationCalls, locationBaseline);
+
+          await tester.pump(const Duration(seconds: 30));
+          expect(operations.heartbeatCalls, baseline + 2);
+        },
+      );
+
+      testWidgets(
+        'heartbeat 400 (Driver realmente OFFLINE) no rompe la vista COMPLETED',
+        (tester) async {
+          final ride = _rideFixture(status: 'IN_PROGRESS');
+          final rides = _FakeRidesRepository(activeRideQueue: [ride])
+            ..completeRideQueue = [_completionFixture()];
+          final operations = _FakeOperationsRepository();
+
+          await _pumpActiveRide(tester, rides: rides, operations: operations);
+          await tester.pump();
+
+          await tester.ensureVisible(
+            find.text('Llegué al destino y finalizar viaje'),
+          );
+          await tester.tap(find.text('Llegué al destino y finalizar viaje'));
+          await tester.pump();
+          await tester.tap(find.text('Sí, finalizar viaje'));
+          await tester.pump();
+          await tester.pump();
+
+          expect(find.text('¡Viaje completado!'), findsOneWidget);
+
+          operations.heartbeatError = _dioError(statusCode: 400);
+
+          expect(tester.takeException(), isNull);
+
+          await tester.pump(const Duration(seconds: 30));
+
+          expect(tester.takeException(), isNull);
+          expect(find.text('¡Viaje completado!'), findsOneWidget);
+        },
+      );
+
+      testWidgets(
+        '"Cobrar efectivo" desmonta ActiveRideScreen y detiene el heartbeat '
+        '(sin doble timer al llegar a Cash)',
+        (tester) async {
+          final completion = _completionFixture(rideId: 'ride-42');
+          final operations = _FakeOperationsRepository();
+
+          final router = GoRouter(
+            initialLocation: '/active-ride',
+            routes: [
+              GoRoute(
+                path: '/active-ride',
+                builder: (context, state) => const DriverActiveRideScreen(),
+              ),
+              GoRoute(
+                path: '/cash-payment/:rideId',
+                builder: (context, state) => Scaffold(
+                  body: Text(
+                    'CASH_PAYMENT_ROUTE ${state.pathParameters['rideId']}',
+                  ),
+                ),
+              ),
+            ],
+          );
+          addTearDown(router.dispose);
+
+          final ride = _rideFixture(status: 'IN_PROGRESS');
+          final rides = _FakeRidesRepository(activeRideQueue: [ride])
+            ..completeRideQueue = [completion];
+
+          await tester.pumpWidget(
+            ProviderScope(
+              overrides: [
+                driverRidesRepositoryProvider.overrideWithValue(rides),
+                driverOperationsRepositoryProvider.overrideWithValue(
+                  operations,
+                ),
+              ],
+              child: MaterialApp.router(routerConfig: router),
+            ),
+          );
+          await tester.pump();
+
+          await tester.ensureVisible(
+            find.text('Llegué al destino y finalizar viaje'),
+          );
+          await tester.tap(find.text('Llegué al destino y finalizar viaje'));
+          await tester.pump();
+          await tester.tap(find.text('Sí, finalizar viaje'));
+          await tester.pump();
+          await tester.pump();
+
+          expect(find.text('¡Viaje completado!'), findsOneWidget);
+          expect(operations.heartbeatCalls, greaterThanOrEqualTo(1));
+
+          await tester.ensureVisible(find.text('Cobrar efectivo'));
+          await tester.tap(find.text('Cobrar efectivo'));
+          await tester.pumpAndSettle();
+
+          expect(
+            find.text('CASH_PAYMENT_ROUTE ride-42'),
+            findsOneWidget,
+          );
+
+          final afterNavigation = operations.heartbeatCalls;
+
+          await tester.pump(const Duration(seconds: 90));
+
+          expect(operations.heartbeatCalls, afterNavigation);
+        },
+      );
     });
 
     testWidgets('B: muestra firstName real del Passenger', (tester) async {
@@ -2135,12 +2271,23 @@ class _FakeRidesRepository extends DriverRidesRepository {
 class _FakeOperationsRepository extends DriverOperationsRepository {
   _FakeOperationsRepository() : super(Dio());
 
+  /// Mutable a propósito: algunos tests (Checkpoint F1) la asignan
+  /// después de montar la pantalla, para simular un heartbeat que
+  /// empieza a fallar recién en un ciclo posterior.
+  DioException? heartbeatError;
+
   int heartbeatCalls = 0;
   int updateLocationCalls = 0;
 
   @override
   Future<DriverOperationalState> heartbeat() async {
     heartbeatCalls++;
+
+    final error = heartbeatError;
+
+    if (error != null) {
+      throw error;
+    }
 
     return const DriverOperationalState(status: DriverOperationalStatus.busy);
   }

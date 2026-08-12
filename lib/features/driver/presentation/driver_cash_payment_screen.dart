@@ -7,10 +7,12 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../../core/theme/driver_palette.dart';
+import '../data/driver_operations_repository.dart';
 import '../data/driver_payments_repository.dart';
 import '../data/driver_rides_repository.dart';
 import '../domain/driver_money.dart';
 import '../domain/driver_ride_payment.dart';
+import 'driver_post_ride_presence.dart';
 import 'driver_ride_completion_view.dart' show paymentMethodLabel;
 
 class DriverCashPaymentScreen extends ConsumerStatefulWidget {
@@ -50,6 +52,15 @@ class _DriverCashPaymentScreenState
   String? _loadError;
   _CashConfirmError? _confirmError;
 
+  /// Heartbeat presence-only (Checkpoint F1). Cubre tanto el cobro
+  /// (PENDING) como el comprobante PAID: ambas ramas viven en este
+  /// mismo State, así que un único mecanismo arrancado en
+  /// `initState` y detenido en `dispose` alcanza para las dos.
+  DriverPostRidePresence? _postRidePresence;
+
+  @visibleForTesting
+  bool get debugPostRidePresenceActive => _postRidePresence != null;
+
   @override
   void initState() {
     super.initState();
@@ -57,12 +68,17 @@ class _DriverCashPaymentScreenState
     _cashController.addListener(_handleCashChanged);
 
     unawaited(_loadPayment());
+
+    _postRidePresence = DriverPostRidePresence(
+      repository: ref.read(driverOperationsRepositoryProvider),
+    );
   }
 
   @override
   void dispose() {
     _cashController.removeListener(_handleCashChanged);
     _cashController.dispose();
+    _postRidePresence?.dispose();
     super.dispose();
   }
 

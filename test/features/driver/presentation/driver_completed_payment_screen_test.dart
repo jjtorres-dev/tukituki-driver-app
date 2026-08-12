@@ -4,7 +4,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
 
+import 'package:driver/features/driver/data/driver_operations_repository.dart';
 import 'package:driver/features/driver/data/driver_rides_repository.dart';
+import 'package:driver/features/driver/domain/driver_operational_state.dart';
 import 'package:driver/features/driver/domain/driver_pending_payment.dart';
 import 'package:driver/features/driver/domain/driver_ride_payment.dart';
 import 'package:driver/features/driver/presentation/driver_completed_payment_screen.dart';
@@ -71,7 +73,12 @@ void main() {
 
     await tester.pumpWidget(
       ProviderScope(
-        overrides: [driverRidesRepositoryProvider.overrideWithValue(rides)],
+        overrides: [
+          driverRidesRepositoryProvider.overrideWithValue(rides),
+          driverOperationsRepositoryProvider.overrideWithValue(
+            _FakeOperationsRepository(),
+          ),
+        ],
         child: MaterialApp.router(routerConfig: router),
       ),
     );
@@ -121,19 +128,203 @@ void main() {
     );
     expect(find.text('Reintentar'), findsOneWidget);
   });
+
+  group('Checkpoint F1: presence heartbeat (restore COMPLETED)', () {
+    testWidgets(
+      'heartbeat arranca al encontrar un pending real, en foreground',
+      (tester) async {
+        final rides = _FakeRidesRepository(
+          pendingPayments: [_pendingPaymentFixture(rideId: 'ride-1')],
+        );
+        final operations = _FakeOperationsRepository();
+
+        await _pumpScreen(
+          tester,
+          rideId: 'ride-1',
+          rides: rides,
+          operations: operations,
+        );
+        await tester.pump();
+
+        expect(find.text('¡Viaje completado!'), findsOneWidget);
+        expect(operations.heartbeatCalls, 1);
+
+        final baseline = operations.heartbeatCalls;
+
+        await tester.pump(const Duration(seconds: 30));
+        expect(operations.heartbeatCalls, baseline + 1);
+        expect(operations.updateLocationCalls, 0);
+      },
+    );
+
+    testWidgets(
+      'sin pending real (rideId sin coincidencia): no arranca heartbeat',
+      (tester) async {
+        final rides = _FakeRidesRepository(
+          pendingPayments: [_pendingPaymentFixture(rideId: 'otro-ride')],
+        );
+        final operations = _FakeOperationsRepository();
+
+        await _pumpScreen(
+          tester,
+          rideId: 'ride-1',
+          rides: rides,
+          operations: operations,
+        );
+        await tester.pump();
+
+        await tester.pump(const Duration(seconds: 90));
+
+        expect(operations.heartbeatCalls, 0);
+      },
+    );
+
+    testWidgets('heartbeat 400 (OFFLINE real) no rompe el restore', (
+      tester,
+    ) async {
+      final rides = _FakeRidesRepository(
+        pendingPayments: [_pendingPaymentFixture(rideId: 'ride-1')],
+      );
+      final operations = _FakeOperationsRepository(
+        heartbeatError: DioException(
+          requestOptions: RequestOptions(
+            path: 'drivers/me/operational-status/heartbeat',
+          ),
+          type: DioExceptionType.badResponse,
+          response: Response<dynamic>(
+            requestOptions: RequestOptions(
+              path: 'drivers/me/operational-status/heartbeat',
+            ),
+            statusCode: 400,
+          ),
+        ),
+      );
+
+      await _pumpScreen(
+        tester,
+        rideId: 'ride-1',
+        rides: rides,
+        operations: operations,
+      );
+      await tester.pump();
+
+      expect(tester.takeException(), isNull);
+      expect(find.text('¡Viaje completado!'), findsOneWidget);
+
+      await tester.pump(const Duration(seconds: 30));
+
+      expect(tester.takeException(), isNull);
+      expect(find.text('¡Viaje completado!'), findsOneWidget);
+    });
+
+    testWidgets('CTA "Cobrar efectivo" desmonta y detiene el heartbeat', (
+      tester,
+    ) async {
+      final rides = _FakeRidesRepository(
+        pendingPayments: [_pendingPaymentFixture(rideId: 'ride-9')],
+      );
+      final operations = _FakeOperationsRepository();
+
+      final router = GoRouter(
+        initialLocation: '/completed-payment/ride-9',
+        routes: [
+          GoRoute(
+            path: '/completed-payment/:rideId',
+            builder: (context, state) => DriverCompletedPaymentScreen(
+              rideId: state.pathParameters['rideId']!,
+            ),
+          ),
+          GoRoute(
+            path: '/cash-payment/:rideId',
+            builder: (context, state) => Scaffold(
+              body: Text('CASH_PAYMENT_ROUTE ${state.pathParameters['rideId']}'),
+            ),
+          ),
+        ],
+      );
+      addTearDown(router.dispose);
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            driverRidesRepositoryProvider.overrideWithValue(rides),
+            driverOperationsRepositoryProvider.overrideWithValue(operations),
+          ],
+          child: MaterialApp.router(routerConfig: router),
+        ),
+      );
+      await tester.pump();
+
+      expect(operations.heartbeatCalls, 1);
+
+      await tester.tap(find.text('Cobrar efectivo'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('CASH_PAYMENT_ROUTE ride-9'), findsOneWidget);
+
+      final afterNavigation = operations.heartbeatCalls;
+
+      await tester.pump(const Duration(seconds: 90));
+
+      expect(operations.heartbeatCalls, afterNavigation);
+    });
+  });
 }
 
 Future<void> _pumpScreen(
   WidgetTester tester, {
   required String rideId,
   required _FakeRidesRepository rides,
+  _FakeOperationsRepository? operations,
 }) async {
   await tester.pumpWidget(
     ProviderScope(
-      overrides: [driverRidesRepositoryProvider.overrideWithValue(rides)],
+      overrides: [
+        driverRidesRepositoryProvider.overrideWithValue(rides),
+        driverOperationsRepositoryProvider.overrideWithValue(
+          operations ?? _FakeOperationsRepository(),
+        ),
+      ],
       child: MaterialApp(home: DriverCompletedPaymentScreen(rideId: rideId)),
     ),
   );
+}
+
+class _FakeOperationsRepository extends DriverOperationsRepository {
+  _FakeOperationsRepository({this.heartbeatError}) : super(Dio());
+
+  /// Fija a propósito (no cola): igual criterio que en
+  /// `driver_cash_payment_screen_test.dart`.
+  DioException? heartbeatError;
+
+  int heartbeatCalls = 0;
+  int updateLocationCalls = 0;
+
+  @override
+  Future<DriverOperationalState> heartbeat() async {
+    heartbeatCalls++;
+
+    final error = heartbeatError;
+
+    if (error != null) {
+      throw error;
+    }
+
+    return const DriverOperationalState(
+      status: DriverOperationalStatus.available,
+    );
+  }
+
+  @override
+  Future<void> updateLocation({
+    required double latitude,
+    required double longitude,
+    double? heading,
+    double? speed,
+    double? accuracy,
+  }) async {
+    updateLocationCalls++;
+  }
 }
 
 DriverPendingPayment _pendingPaymentFixture({

@@ -6,8 +6,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../../core/theme/driver_palette.dart';
+import '../data/driver_operations_repository.dart';
 import '../data/driver_rides_repository.dart';
 import '../domain/driver_pending_payment.dart';
+import 'driver_post_ride_presence.dart';
 import 'driver_ride_completion_view.dart';
 
 /// Restore server-side de "Viaje completado / Cobrar efectivo"
@@ -18,9 +20,14 @@ import 'driver_ride_completion_view.dart';
 /// en memoria ni de estado de otra pantalla: hace su propia consulta
 /// por `rideId`, igual que ya hace `DriverCashPaymentScreen`.
 ///
-/// No lleva GPS, timers ni heartbeat: restaurar un cobro pendiente es
-/// UX, no un estado operacional (Backend ya dejó al conductor
-/// AVAILABLE al completar el viaje).
+/// No lleva GPS ni timers de ubicación: restaurar un cobro pendiente
+/// es UX, no un estado operacional (Backend ya dejó al conductor
+/// AVAILABLE al completar el viaje). Sí mantiene un heartbeat
+/// presence-only (Checkpoint F1) mientras esta pantalla está visible
+/// en foreground, por la misma razón que las demás pantallas
+/// post-Ride: sin él, un restore visible por mucho tiempo puede
+/// dejar vencer `lastSeenAt` y Backend termina mostrando al Driver
+/// como desconectado la próxima vez que consulte su estado.
 class DriverCompletedPaymentScreen extends ConsumerStatefulWidget {
   const DriverCompletedPaymentScreen({required this.rideId, super.key});
 
@@ -39,11 +46,36 @@ class _DriverCompletedPaymentScreenState
   bool _notFound = false;
   String? _error;
 
+  DriverPostRidePresence? _postRidePresence;
+
+  @visibleForTesting
+  bool get debugPostRidePresenceActive => _postRidePresence != null;
+
   @override
   void initState() {
     super.initState();
 
     unawaited(_load());
+  }
+
+  @override
+  void dispose() {
+    _postRidePresence?.dispose();
+
+    super.dispose();
+  }
+
+  /// Aislado del try/catch de `_load()` a propósito: un fallo aquí es
+  /// puramente presence best-effort y nunca debe interpretarse como
+  /// un error de carga del cobro pendiente.
+  void _startPostRidePresence() {
+    if (_postRidePresence != null || !mounted) {
+      return;
+    }
+
+    _postRidePresence = DriverPostRidePresence(
+      repository: ref.read(driverOperationsRepositoryProvider),
+    );
   }
 
   Future<void> _load() async {
@@ -78,6 +110,10 @@ class _DriverCompletedPaymentScreenState
         _notFound = match == null;
         _loading = false;
       });
+
+      if (match != null) {
+        _startPostRidePresence();
+      }
     } on DioException catch (error) {
       debugPrint(
         'DRIVER COMPLETED PAYMENT LOAD ERROR '
