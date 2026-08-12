@@ -11,6 +11,7 @@ import 'package:driver/features/driver/data/driver_operations_repository.dart';
 import 'package:driver/features/driver/data/driver_rides_repository.dart';
 import 'package:driver/features/driver/domain/driver_active_ride.dart';
 import 'package:driver/features/driver/domain/driver_assigned_passenger.dart';
+import 'package:driver/features/driver/domain/driver_cancellation_reason.dart';
 import 'package:driver/features/driver/domain/driver_operational_state.dart';
 import 'package:driver/features/driver/domain/driver_ride_completion.dart';
 import 'package:driver/features/driver/presentation/driver_active_ride_screen.dart';
@@ -170,16 +171,19 @@ void main() {
       expect(find.text(ride.id), findsNothing);
     });
 
-    testWidgets('J: NO muestra Cancelar viaje', (tester) async {
-      final ride = _rideFixture(status: 'DRIVER_ASSIGNED');
-      final rides = _FakeRidesRepository(activeRideQueue: [ride]);
+    testWidgets(
+      'J: SÍ muestra "Cancelar viaje" (Checkpoint G1: Backend permite '
+      'cancelar en DRIVER_ASSIGNED)',
+      (tester) async {
+        final ride = _rideFixture(status: 'DRIVER_ASSIGNED');
+        final rides = _FakeRidesRepository(activeRideQueue: [ride]);
 
-      await _pumpActiveRide(tester, rides: rides);
-      await tester.pump();
+        await _pumpActiveRide(tester, rides: rides);
+        await tester.pump();
 
-      expect(find.text('Cancelar viaje'), findsNothing);
-      expect(find.textContaining('Cancelar'), findsNothing);
-    });
+        expect(find.text('Cancelar viaje'), findsOneWidget);
+      },
+    );
 
     testWidgets('K: CTA llama startArrival exactamente una vez', (tester) async {
       final assigned = _rideFixture(status: 'DRIVER_ASSIGNED');
@@ -1860,6 +1864,711 @@ void main() {
       },
     );
   });
+
+  group('Cancelación del Driver (Checkpoint G1)', () {
+    group('visibilidad del botón', () {
+      testWidgets('DRIVER_ASSIGNED muestra "Cancelar viaje"', (tester) async {
+        final ride = _rideFixture(status: 'DRIVER_ASSIGNED');
+        final rides = _FakeRidesRepository(activeRideQueue: [ride]);
+
+        await _pumpActiveRide(tester, rides: rides);
+        await tester.pump();
+
+        expect(find.text('Cancelar viaje'), findsOneWidget);
+      });
+
+      testWidgets('DRIVER_ARRIVING muestra "Cancelar viaje"', (tester) async {
+        final ride = _rideFixture(status: 'DRIVER_ARRIVING');
+        final rides = _FakeRidesRepository(activeRideQueue: [ride]);
+
+        await _pumpActiveRide(tester, rides: rides);
+        await tester.pump();
+
+        expect(find.text('Cancelar viaje'), findsOneWidget);
+      });
+
+      testWidgets('DRIVER_ARRIVED muestra "Cancelar viaje"', (tester) async {
+        final ride = _rideFixture(status: 'DRIVER_ARRIVED');
+        final rides = _FakeRidesRepository(activeRideQueue: [ride]);
+
+        await _pumpActiveRide(tester, rides: rides);
+        await tester.pump();
+
+        expect(find.text('Cancelar viaje'), findsOneWidget);
+      });
+
+      testWidgets('IN_PROGRESS NO muestra "Cancelar viaje"', (tester) async {
+        final ride = _rideFixture(status: 'IN_PROGRESS');
+        final rides = _FakeRidesRepository(activeRideQueue: [ride]);
+
+        await _pumpActiveRide(tester, rides: rides);
+        await tester.pump();
+
+        expect(find.text('Cancelar viaje'), findsNothing);
+      });
+
+      testWidgets('COMPLETED NO muestra "Cancelar viaje"', (tester) async {
+        final ride = _rideFixture(status: 'IN_PROGRESS');
+        final rides = _FakeRidesRepository(activeRideQueue: [ride])
+          ..completeRideQueue = [_completionFixture()];
+
+        await _pumpActiveRide(tester, rides: rides);
+        await tester.pump();
+
+        await tester.ensureVisible(
+          find.text('Llegué al destino y finalizar viaje'),
+        );
+        await tester.tap(find.text('Llegué al destino y finalizar viaje'));
+        await tester.pump();
+        await tester.tap(find.text('Sí, finalizar viaje'));
+        await tester.pump();
+        await tester.pump();
+
+        expect(find.text('¡Viaje completado!'), findsOneWidget);
+        expect(find.text('Cancelar viaje'), findsNothing);
+      });
+    });
+
+    group('selector de motivo', () {
+      testWidgets(
+        'muestra exactamente los 6 labels utilizables, sin PASSENGER_NOT_FOUND',
+        (tester) async {
+          final ride = _rideFixture(status: 'DRIVER_ASSIGNED');
+          final rides = _FakeRidesRepository(activeRideQueue: [ride]);
+
+          await _pumpActiveRide(tester, rides: rides);
+          await tester.pump();
+
+          await tester.ensureVisible(find.text('Cancelar viaje'));
+          await tester.tap(find.text('Cancelar viaje'));
+          await tester.pumpAndSettle();
+
+          expect(find.text('Selecciona un motivo'), findsOneWidget);
+
+          for (final reason in DriverCancellationReason.values) {
+            expect(find.text(reason.label), findsOneWidget);
+          }
+
+          expect(find.text('Pasajero no apareció'), findsNothing);
+          expect(find.textContaining('PASSENGER_NOT_FOUND'), findsNothing);
+          expect(find.textContaining('NOT_FOUND'), findsNothing);
+        },
+      );
+
+      testWidgets('abrir el selector NO ejecuta cancelRide todavía', (
+        tester,
+      ) async {
+        final ride = _rideFixture(status: 'DRIVER_ASSIGNED');
+        final rides = _FakeRidesRepository(activeRideQueue: [ride]);
+
+        await _pumpActiveRide(tester, rides: rides);
+        await tester.pump();
+
+        await tester.ensureVisible(find.text('Cancelar viaje'));
+        await tester.tap(find.text('Cancelar viaje'));
+        await tester.pumpAndSettle();
+
+        expect(rides.cancelRideCalls, 0);
+      });
+    });
+
+    group('detalle opcional', () {
+      testWidgets('vacío es válido: avanza a confirmación', (tester) async {
+        final ride = _rideFixture(status: 'DRIVER_ASSIGNED');
+        final rides = _FakeRidesRepository(activeRideQueue: [ride]);
+
+        await _pumpActiveRide(tester, rides: rides);
+        await tester.pump();
+
+        await _openCancelFlow(tester, reason: DriverCancellationReason.other);
+
+        expect(find.text('¿Cancelar este viaje?'), findsOneWidget);
+      });
+
+      testWidgets('1 a 4 caracteres: bloquea con error y NO abre confirmación', (
+        tester,
+      ) async {
+        final ride = _rideFixture(status: 'DRIVER_ASSIGNED');
+        final rides = _FakeRidesRepository(activeRideQueue: [ride]);
+
+        await _pumpActiveRide(tester, rides: rides);
+        await tester.pump();
+
+        await tester.ensureVisible(find.text('Cancelar viaje'));
+        await tester.tap(find.text('Cancelar viaje'));
+        await tester.pumpAndSettle();
+
+        await tester.tap(find.text(DriverCancellationReason.other.label));
+        await tester.pump();
+
+        await tester.enterText(_cancelDetailFieldFinder, 'abc');
+        await tester.tap(find.text('Continuar'));
+        await tester.pump();
+
+        expect(
+          find.text('Escribe al menos 5 caracteres o deja el campo vacío.'),
+          findsOneWidget,
+        );
+        expect(find.text('¿Cancelar este viaje?'), findsNothing);
+      });
+
+      testWidgets('5 o más caracteres: válido, avanza a confirmación', (
+        tester,
+      ) async {
+        final ride = _rideFixture(status: 'DRIVER_ASSIGNED');
+        final rides = _FakeRidesRepository(activeRideQueue: [ride]);
+
+        await _pumpActiveRide(tester, rides: rides);
+        await tester.pump();
+
+        await _openCancelFlow(
+          tester,
+          reason: DriverCancellationReason.other,
+          detail: 'Motivo real explicado',
+        );
+
+        expect(find.text('¿Cancelar este viaje?'), findsOneWidget);
+      });
+
+      testWidgets('el campo respeta el máximo defensivo de 300 caracteres', (
+        tester,
+      ) async {
+        final ride = _rideFixture(status: 'DRIVER_ASSIGNED');
+        final rides = _FakeRidesRepository(activeRideQueue: [ride]);
+
+        await _pumpActiveRide(tester, rides: rides);
+        await tester.pump();
+
+        await tester.ensureVisible(find.text('Cancelar viaje'));
+        await tester.tap(find.text('Cancelar viaje'));
+        await tester.pumpAndSettle();
+
+        final field = tester.widget<TextField>(_cancelDetailFieldFinder);
+
+        expect(field.maxLength, 300);
+      });
+    });
+
+    group('confirmación', () {
+      testWidgets('Continuar abre confirmación sin llamar cancelRide todavía', (
+        tester,
+      ) async {
+        final ride = _rideFixture(status: 'DRIVER_ASSIGNED');
+        final rides = _FakeRidesRepository(activeRideQueue: [ride]);
+
+        await _pumpActiveRide(tester, rides: rides);
+        await tester.pump();
+
+        await _openCancelFlow(tester, reason: DriverCancellationReason.other);
+
+        expect(find.text('¿Cancelar este viaje?'), findsOneWidget);
+        expect(find.textContaining('Motivo: Otro motivo'), findsOneWidget);
+        expect(rides.cancelRideCalls, 0);
+      });
+
+      testWidgets('Volver cierra la confirmación sin llamar cancelRide', (
+        tester,
+      ) async {
+        final ride = _rideFixture(status: 'DRIVER_ASSIGNED');
+        final rides = _FakeRidesRepository(activeRideQueue: [ride]);
+
+        await _pumpActiveRide(tester, rides: rides);
+        await tester.pump();
+
+        await _openCancelFlow(tester, reason: DriverCancellationReason.other);
+
+        await tester.tap(find.text('Volver'));
+        await tester.pumpAndSettle();
+
+        expect(find.text('¿Cancelar este viaje?'), findsNothing);
+        expect(rides.cancelRideCalls, 0);
+        expect(find.text('Pasajero asignado'), findsOneWidget);
+      });
+    });
+
+    group('éxito', () {
+      testWidgets(
+        'confirmar llama cancelRide exactamente una vez y navega a /home',
+        (tester) async {
+          final ride = _rideFixture(status: 'DRIVER_ASSIGNED');
+          final rides = _FakeRidesRepository(activeRideQueue: [ride]);
+
+          final router = GoRouter(
+            initialLocation: '/active-ride',
+            routes: [
+              GoRoute(
+                path: '/active-ride',
+                builder: (context, state) => const DriverActiveRideScreen(),
+              ),
+              GoRoute(
+                path: '/home',
+                builder: (context, state) =>
+                    const Scaffold(body: Text('HOME_ROUTE')),
+              ),
+            ],
+          );
+          addTearDown(router.dispose);
+
+          await tester.pumpWidget(
+            ProviderScope(
+              overrides: [
+                driverRidesRepositoryProvider.overrideWithValue(rides),
+                driverOperationsRepositoryProvider.overrideWithValue(
+                  _FakeOperationsRepository(),
+                ),
+              ],
+              child: MaterialApp.router(routerConfig: router),
+            ),
+          );
+          await tester.pump();
+
+          await _openCancelFlow(
+            tester,
+            reason: DriverCancellationReason.vehicleProblem,
+          );
+          await _confirmCancel(tester);
+
+          expect(rides.cancelRideCalls, 1);
+          expect(
+            rides.lastCancelReason,
+            DriverCancellationReason.vehicleProblem,
+          );
+          expect(find.text('HOME_ROUTE'), findsOneWidget);
+        },
+      );
+
+      testWidgets(
+        'éxito: no dispara heartbeat/polling adicional tras llegar a Home '
+        '(sin goOnline/goOffline manual)',
+        (tester) async {
+          final ride = _rideFixture(status: 'DRIVER_ASSIGNED');
+          final rides = _FakeRidesRepository(activeRideQueue: [ride]);
+          final operations = _FakeOperationsRepository();
+
+          final router = GoRouter(
+            initialLocation: '/active-ride',
+            routes: [
+              GoRoute(
+                path: '/active-ride',
+                builder: (context, state) => const DriverActiveRideScreen(),
+              ),
+              GoRoute(
+                path: '/home',
+                builder: (context, state) =>
+                    const Scaffold(body: Text('HOME_ROUTE')),
+              ),
+            ],
+          );
+          addTearDown(router.dispose);
+
+          await tester.pumpWidget(
+            ProviderScope(
+              overrides: [
+                driverRidesRepositoryProvider.overrideWithValue(rides),
+                driverOperationsRepositoryProvider.overrideWithValue(
+                  operations,
+                ),
+              ],
+              child: MaterialApp.router(routerConfig: router),
+            ),
+          );
+          await tester.pump();
+
+          await _openCancelFlow(
+            tester,
+            reason: DriverCancellationReason.vehicleProblem,
+          );
+          await _confirmCancel(tester);
+
+          expect(find.text('HOME_ROUTE'), findsOneWidget);
+
+          final activeRideCallsAfterCancel = rides.getActiveRideCalls;
+          final heartbeatCallsAfterCancel = operations.heartbeatCalls;
+
+          await tester.pump(const Duration(seconds: 30));
+
+          expect(rides.getActiveRideCalls, activeRideCallsAfterCancel);
+          expect(operations.heartbeatCalls, heartbeatCallsAfterCancel);
+        },
+      );
+
+      testWidgets('éxito: back stack no permite volver a la pantalla del viaje', (
+        tester,
+      ) async {
+        final ride = _rideFixture(status: 'DRIVER_ASSIGNED');
+        final rides = _FakeRidesRepository(activeRideQueue: [ride]);
+
+        final router = GoRouter(
+          initialLocation: '/active-ride',
+          routes: [
+            GoRoute(
+              path: '/active-ride',
+              builder: (context, state) => const DriverActiveRideScreen(),
+            ),
+            GoRoute(
+              path: '/home',
+              builder: (context, state) =>
+                  const Scaffold(body: Text('HOME_ROUTE')),
+            ),
+          ],
+        );
+        addTearDown(router.dispose);
+
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [
+              driverRidesRepositoryProvider.overrideWithValue(rides),
+              driverOperationsRepositoryProvider.overrideWithValue(
+                _FakeOperationsRepository(),
+              ),
+            ],
+            child: MaterialApp.router(routerConfig: router),
+          ),
+        );
+        await tester.pump();
+
+        await _openCancelFlow(
+          tester,
+          reason: DriverCancellationReason.vehicleProblem,
+        );
+        await _confirmCancel(tester);
+
+        expect(find.text('HOME_ROUTE'), findsOneWidget);
+
+        final canPop =
+            router.routerDelegate.navigatorKey.currentState?.canPop() ??
+            false;
+
+        expect(canPop, isFalse);
+      });
+    });
+
+    group('loading / double tap', () {
+      testWidgets(
+        'mientras cancela, el CTA muestra "Cancelando..." y se deshabilita',
+        (tester) async {
+          final ride = _rideFixture(status: 'DRIVER_ASSIGNED');
+          final rides = _FakeRidesRepository(activeRideQueue: [ride])
+            ..cancelRideGate = Completer<void>();
+
+          await _pumpActiveRide(tester, rides: rides);
+          await tester.pump();
+
+          await _openCancelFlow(tester, reason: DriverCancellationReason.other);
+
+          await tester.tap(find.text('Sí, cancelar viaje'));
+          await tester.pump();
+          await tester.pump();
+
+          expect(find.text('Cancelando...'), findsOneWidget);
+          expect(find.text('Cancelar viaje'), findsNothing);
+
+          final cancelButton = tester.widget<TextButton>(
+            find.ancestor(
+              of: find.text('Cancelando...'),
+              matching: find.byType(TextButton),
+            ),
+          );
+
+          expect(cancelButton.onPressed, isNull);
+
+          rides.cancelRideGate!.complete();
+          await tester.pump();
+          await tester.pump();
+        },
+      );
+
+      testWidgets('garantiza una sola llamada aunque el request tarde', (
+        tester,
+      ) async {
+        final ride = _rideFixture(status: 'DRIVER_ASSIGNED');
+        final rides = _FakeRidesRepository(activeRideQueue: [ride])
+          ..cancelRideGate = Completer<void>();
+
+        await _pumpActiveRide(tester, rides: rides);
+        await tester.pump();
+
+        await _openCancelFlow(tester, reason: DriverCancellationReason.other);
+
+        await tester.tap(find.text('Sí, cancelar viaje'));
+        await tester.pump();
+        await tester.pump();
+
+        expect(rides.cancelRideCalls, 1);
+
+        rides.cancelRideGate!.complete();
+        await tester.pump();
+        await tester.pump();
+
+        expect(rides.cancelRideCalls, 1);
+      });
+    });
+
+    group('errores', () {
+      testWidgets('network/5xx: la pantalla sigue activa y reanuda workers', (
+        tester,
+      ) async {
+        final ride = _rideFixture(status: 'DRIVER_ASSIGNED');
+        final rides = _FakeRidesRepository(activeRideQueue: [ride])
+          ..cancelRideResult = _dioNetworkError();
+
+        await _pumpActiveRide(tester, rides: rides);
+        await tester.pump();
+
+        await _openCancelFlow(tester, reason: DriverCancellationReason.other);
+        await _confirmCancel(tester);
+
+        expect(find.text('Pasajero asignado'), findsOneWidget);
+        expect(find.text('Cancelar viaje'), findsOneWidget);
+
+        final activeRideCallsAfterFailure = rides.getActiveRideCalls;
+
+        await tester.pump(const Duration(seconds: 3));
+
+        expect(
+          rides.getActiveRideCalls,
+          greaterThan(activeRideCallsAfterFailure),
+        );
+      });
+
+      testWidgets(
+        '400: el estado ya no es cancelable, se reconcilia y oculta el botón',
+        (tester) async {
+          final assigned = _rideFixture(status: 'DRIVER_ASSIGNED');
+          final inProgress = _rideFixture(status: 'IN_PROGRESS');
+          final rides = _FakeRidesRepository(activeRideQueue: [assigned])
+            ..cancelRideResult = _dioError(
+              statusCode: 400,
+              data: const {
+                'message':
+                    'El conductor ya no puede cancelar el viaje en su estado actual',
+              },
+            );
+
+          await _pumpActiveRide(tester, rides: rides);
+          await tester.pump();
+
+          await _openCancelFlow(tester, reason: DriverCancellationReason.other);
+
+          rides.queueNextActiveRide(inProgress);
+
+          await tester.tap(find.text('Sí, cancelar viaje'));
+          await tester.pump();
+          await tester.pump();
+          await tester.pump();
+
+          expect(find.text('Viaje en curso'), findsOneWidget);
+          expect(find.text('Cancelar viaje'), findsNothing);
+        },
+      );
+
+      testWidgets(
+        '409: otra cancelación ganó la carrera, Ride ya es terminal -> Home',
+        (tester) async {
+          final ride = _rideFixture(status: 'DRIVER_ASSIGNED');
+          final rides = _FakeRidesRepository(activeRideQueue: [ride])
+            ..cancelRideResult = _dioError(
+              statusCode: 409,
+              data: const {'message': 'El viaje ya fue cancelado'},
+            );
+
+          final router = GoRouter(
+            initialLocation: '/active-ride',
+            routes: [
+              GoRoute(
+                path: '/active-ride',
+                builder: (context, state) => const DriverActiveRideScreen(),
+              ),
+              GoRoute(
+                path: '/home',
+                builder: (context, state) =>
+                    const Scaffold(body: Text('HOME_ROUTE')),
+              ),
+            ],
+          );
+          addTearDown(router.dispose);
+
+          await tester.pumpWidget(
+            ProviderScope(
+              overrides: [
+                driverRidesRepositoryProvider.overrideWithValue(rides),
+                driverOperationsRepositoryProvider.overrideWithValue(
+                  _FakeOperationsRepository(),
+                ),
+              ],
+              child: MaterialApp.router(routerConfig: router),
+            ),
+          );
+          await tester.pump();
+
+          await _openCancelFlow(tester, reason: DriverCancellationReason.other);
+
+          rides.queueNextActiveRide(null);
+
+          await tester.tap(find.text('Sí, cancelar viaje'));
+          await tester.pump();
+          await tester.pump();
+          await tester.pump();
+
+          expect(find.text('HOME_ROUTE'), findsOneWidget);
+          expect(rides.cancelRideCalls, 1);
+        },
+      );
+    });
+
+    group('timers', () {
+      testWidgets('éxito: no deja timers de la pantalla corriendo', (
+        tester,
+      ) async {
+        final ride = _rideFixture(status: 'DRIVER_ASSIGNED');
+        final rides = _FakeRidesRepository(activeRideQueue: [ride]);
+        final operations = _FakeOperationsRepository();
+
+        final router = GoRouter(
+          initialLocation: '/active-ride',
+          routes: [
+            GoRoute(
+              path: '/active-ride',
+              builder: (context, state) => const DriverActiveRideScreen(),
+            ),
+            GoRoute(
+              path: '/home',
+              builder: (context, state) =>
+                  const Scaffold(body: Text('HOME_ROUTE')),
+            ),
+          ],
+        );
+        addTearDown(router.dispose);
+
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [
+              driverRidesRepositoryProvider.overrideWithValue(rides),
+              driverOperationsRepositoryProvider.overrideWithValue(
+                operations,
+              ),
+            ],
+            child: MaterialApp.router(routerConfig: router),
+          ),
+        );
+        await tester.pump();
+
+        await _openCancelFlow(
+          tester,
+          reason: DriverCancellationReason.vehicleProblem,
+        );
+        await _confirmCancel(tester);
+
+        expect(find.text('HOME_ROUTE'), findsOneWidget);
+
+        final activeRideCallsAfterCancel = rides.getActiveRideCalls;
+        final heartbeatCallsAfterCancel = operations.heartbeatCalls;
+
+        await tester.pump(const Duration(seconds: 30));
+
+        expect(rides.getActiveRideCalls, activeRideCallsAfterCancel);
+        expect(operations.heartbeatCalls, heartbeatCallsAfterCancel);
+      });
+
+      testWidgets('falla: reanuda el polling exactamente una vez (sin duplicar)', (
+        tester,
+      ) async {
+        final ride = _rideFixture(status: 'DRIVER_ASSIGNED');
+        final rides = _FakeRidesRepository(activeRideQueue: [ride])
+          ..cancelRideResult = _dioNetworkError();
+
+        await _pumpActiveRide(tester, rides: rides);
+        await tester.pump();
+
+        await _openCancelFlow(tester, reason: DriverCancellationReason.other);
+        await _confirmCancel(tester);
+
+        final callsBefore = rides.getActiveRideCalls;
+
+        await tester.pump(const Duration(seconds: 3));
+
+        // Un único timer de 3s activo tras la falla: exactamente una
+        // llamada adicional, nunca dos (lo que delataría un timer
+        // duplicado corriendo en paralelo).
+        expect(rides.getActiveRideCalls, callsBefore + 1);
+      });
+    });
+
+    group('Responsive — flujo de cancelación', () {
+      testWidgets(
+        '360x640: selector de motivo con teclado abierto sin overflow',
+        (tester) async {
+          tester.view.physicalSize = const Size(360, 640);
+          tester.view.devicePixelRatio = 1;
+          addTearDown(tester.view.resetPhysicalSize);
+          addTearDown(tester.view.resetDevicePixelRatio);
+
+          final ride = _rideFixture(status: 'DRIVER_ASSIGNED');
+          final rides = _FakeRidesRepository(activeRideQueue: [ride]);
+
+          await _pumpActiveRide(tester, rides: rides);
+          await tester.pump();
+
+          await tester.ensureVisible(find.text('Cancelar viaje'));
+          await tester.tap(find.text('Cancelar viaje'));
+          await tester.pumpAndSettle();
+
+          await tester.tap(find.text(DriverCancellationReason.other.label));
+          await tester.pump();
+
+          await tester.enterText(
+            _cancelDetailFieldFinder,
+            'Motivo detallado bastante largo para probar overflow en '
+            'pantallas pequeñas de verdad',
+          );
+          await tester.pump();
+
+          expect(tester.takeException(), isNull);
+        },
+      );
+
+      testWidgets('390x844: diálogo de confirmación sin overflow', (
+        tester,
+      ) async {
+        tester.view.physicalSize = const Size(390, 844);
+        tester.view.devicePixelRatio = 1;
+        addTearDown(tester.view.resetPhysicalSize);
+        addTearDown(tester.view.resetDevicePixelRatio);
+
+        final ride = _rideFixture(status: 'DRIVER_ARRIVED');
+        final rides = _FakeRidesRepository(activeRideQueue: [ride]);
+
+        await _pumpActiveRide(tester, rides: rides);
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 50));
+
+        await _openCancelFlow(
+          tester,
+          reason: DriverCancellationReason.safetyConcern,
+          detail: 'Detalle largo para verificar que el diálogo no rompe '
+              'el layout en una pantalla mediana',
+        );
+
+        expect(tester.takeException(), isNull);
+        expect(find.text('¿Cancelar este viaje?'), findsOneWidget);
+      });
+
+      testWidgets('412x915: botón secundario conviviendo con el CTA principal', (
+        tester,
+      ) async {
+        tester.view.physicalSize = const Size(412, 915);
+        tester.view.devicePixelRatio = 1;
+        addTearDown(tester.view.resetPhysicalSize);
+        addTearDown(tester.view.resetDevicePixelRatio);
+
+        await _pumpStressScenario(tester, status: 'DRIVER_ARRIVING');
+
+        expect(find.text('Cancelar viaje'), findsOneWidget);
+        expect(find.text('Llegué al punto de recojo'), findsOneWidget);
+        expect(tester.takeException(), isNull);
+      });
+    });
+  });
 }
 
 Iterable<String> _visibleTexts(WidgetTester tester) {
@@ -1884,6 +2593,47 @@ Future<void> _pumpActiveRide(
       child: const MaterialApp(home: DriverActiveRideScreen()),
     ),
   );
+}
+
+/// El bottom sheet del selector puede convivir con el `TextField`
+/// oculto del PIN (DRIVER_ARRIVED), así que nunca se usa
+/// `find.byType(TextField)` a secas para el campo de detalle.
+final Finder _cancelDetailFieldFinder = find.byKey(
+  const Key('driver-cancel-detail-field'),
+);
+
+/// Abre el flujo de cancelación hasta el diálogo de confirmación:
+/// tocar "Cancelar viaje" → elegir motivo → (opcional) escribir
+/// detalle → tocar "Continuar". Nunca dispara el request real.
+Future<void> _openCancelFlow(
+  WidgetTester tester, {
+  required DriverCancellationReason reason,
+  String? detail,
+}) async {
+  await tester.ensureVisible(find.text('Cancelar viaje'));
+  await tester.tap(find.text('Cancelar viaje'));
+  await tester.pumpAndSettle();
+
+  await tester.tap(find.text(reason.label));
+  await tester.pump();
+
+  if (detail != null) {
+    await tester.enterText(_cancelDetailFieldFinder, detail);
+    await tester.pump();
+  }
+
+  await tester.tap(find.text('Continuar'));
+  await tester.pumpAndSettle();
+}
+
+/// Toca "Sí, cancelar viaje" en el diálogo de confirmación ya abierto
+/// y deja pasar los pumps suficientes para que el request (no
+/// gateado) resuelva.
+Future<void> _confirmCancel(WidgetTester tester) async {
+  await tester.tap(find.text('Sí, cancelar viaje'));
+  await tester.pump();
+  await tester.pump();
+  await tester.pump();
 }
 
 Future<void> _pumpStressScenario(
@@ -2153,11 +2903,32 @@ class _FakeRidesRepository extends DriverRidesRepository {
   int arriveCalls = 0;
   int startRideCalls = 0;
   int completeRideCalls = 0;
+  int cancelRideCalls = 0;
 
   Completer<DriverActiveRide>? startArrivalGate;
   Completer<DriverActiveRide>? arriveGate;
   Completer<DriverActiveRide>? startRideGate;
   Completer<DriverRideCompletion>? completeRideGate;
+  Completer<void>? cancelRideGate;
+
+  /// `null` => éxito. [DioException] => se relanza tal cual.
+  Object? cancelRideResult;
+
+  DriverCancellationReason? lastCancelReason;
+  String? lastCancelReasonDetail;
+
+  bool _hasNextActiveRideOverride = false;
+  Object? _nextActiveRideOverride;
+
+  /// Fuerza lo que devuelve la PRÓXIMA llamada a `getActiveRide()`
+  /// (usado para simular la reconciliación tras 409: el Driver vuelve
+  /// a consultar y Backend ya no tiene el Ride activo, o ya avanzó a
+  /// otro estado). `value` puede ser `null` (sin ride activo),
+  /// [DriverActiveRide] o [DioException].
+  void queueNextActiveRide(Object? value) {
+    _hasNextActiveRideOverride = true;
+    _nextActiveRideOverride = value;
+  }
 
   /// Elemento: [DriverRideCompletion] (éxito) o [DioException] (falla).
   /// Si tiene un solo elemento, se repite en cada llamada.
@@ -2176,6 +2947,18 @@ class _FakeRidesRepository extends DriverRidesRepository {
   Future<DriverActiveRide?> getActiveRide() async {
     getActiveRideCalls++;
 
+    if (_hasNextActiveRideOverride) {
+      _hasNextActiveRideOverride = false;
+
+      final override = _nextActiveRideOverride;
+
+      if (override is DioException) {
+        throw override;
+      }
+
+      return override as DriverActiveRide?;
+    }
+
     final next = _activeRideQueue.length > 1
         ? _activeRideQueue.removeAt(0)
         : _activeRideQueue.first;
@@ -2185,6 +2968,29 @@ class _FakeRidesRepository extends DriverRidesRepository {
     }
 
     return next as DriverActiveRide?;
+  }
+
+  @override
+  Future<void> cancelRide({
+    required String rideId,
+    required DriverCancellationReason reason,
+    String? reasonDetail,
+  }) async {
+    cancelRideCalls++;
+    lastCancelReason = reason;
+    lastCancelReasonDetail = reasonDetail;
+
+    final gate = cancelRideGate;
+
+    if (gate != null) {
+      return gate.future;
+    }
+
+    final result = cancelRideResult;
+
+    if (result is DioException) {
+      throw result;
+    }
   }
 
   @override

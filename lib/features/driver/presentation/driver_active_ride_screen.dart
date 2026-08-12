@@ -15,6 +15,7 @@ import '../data/driver_rides_repository.dart';
 import '../domain/driver_active_ride.dart';
 import '../domain/driver_assigned_passenger.dart';
 import '../domain/driver_ride_completion.dart';
+import 'driver_cancel_ride_flow.dart';
 import 'driver_home_map.dart';
 import 'driver_post_ride_presence.dart';
 import 'driver_ride_completion_view.dart';
@@ -55,6 +56,12 @@ class _DriverActiveRideScreenState
   bool _loading = true;
   bool _changingStatus = false;
   bool _activityInFlight = false;
+
+  /// `true` únicamente mientras el POST de cancelación está en vuelo.
+  /// Guard independiente de `_changingStatus` (arrive/start/complete)
+  /// para poder deshabilitar el botón "Cancelar viaje" sin acoplarlo
+  /// a esos otros flujos, y viceversa.
+  bool _cancelling = false;
 
   String? _error;
 
@@ -114,6 +121,9 @@ class _DriverActiveRideScreenState
 
   @visibleForTesting
   DriverActiveRide? get debugRide => _ride;
+
+  @visibleForTesting
+  bool get debugCancelling => _cancelling;
 
   @override
   void initState() {
@@ -486,7 +496,7 @@ class _DriverActiveRideScreenState
   Future<void> _startArrival() async {
     final ride = _ride;
 
-    if (ride == null || _changingStatus) {
+    if (ride == null || _changingStatus || _cancelling) {
       return;
     }
 
@@ -539,7 +549,7 @@ class _DriverActiveRideScreenState
   Future<void> _arrive() async {
     final ride = _ride;
 
-    if (ride == null || _changingStatus) {
+    if (ride == null || _changingStatus || _cancelling) {
       return;
     }
 
@@ -625,7 +635,7 @@ class _DriverActiveRideScreenState
 
     final code = _codeController.text.trim();
 
-    if (ride == null || _changingStatus || _pinLocked) {
+    if (ride == null || _changingStatus || _cancelling || _pinLocked) {
       return;
     }
 
@@ -765,6 +775,149 @@ class _DriverActiveRideScreenState
     }
 
     return const _PinSubmitError(_PinErrorKind.network);
+  }
+
+  // ---------------------------------------------------------------------
+  // Cancelación del Driver — Checkpoint G1
+  //
+  // Solo aplica en DRIVER_ASSIGNED/DRIVER_ARRIVING/DRIVER_ARRIVED:
+  // Backend responde 400 para esta misma operación en IN_PROGRESS
+  // (`DRIVER_CANCELLABLE_STATUSES`), así que el botón ni siquiera se
+  // construye en esa pantalla.
+  // ---------------------------------------------------------------------
+
+  Future<void> _cancelRide() async {
+    final ride = _ride;
+
+    if (ride == null || _changingStatus || _cancelling) {
+      return;
+    }
+
+    final draft = await showDriverCancelRideFlow(context: context);
+
+    if (draft == null || !mounted) {
+      return;
+    }
+
+    setState(() {
+      _cancelling = true;
+    });
+
+    // Mismo criterio que `_completeRide`: se detienen primero los
+    // timers de polling/GPS para que ninguno pise el resultado real
+    // de la cancelación mientras el POST está en vuelo.
+    _rideTimer?.cancel();
+    _rideTimer = null;
+    _activityTimer?.cancel();
+    _activityTimer = null;
+
+    try {
+      await _waitForActivityToFinish();
+
+      await ref
+          .read(driverRidesRepositoryProvider)
+          .cancelRide(
+            rideId: ride.id,
+            reason: draft.reason,
+            reasonDetail: draft.reasonDetail,
+          );
+
+      if (!mounted) {
+        return;
+      }
+
+      // Backend ya liberó al Driver (AVAILABLE + Redis GEO si
+      // corresponde): esta pantalla no debe llamar goOnline/goOffline
+      // ni actualizar estado manualmente. Home reconsulta Backend
+      // desde cero al reconstruirse.
+      context.go('/home');
+    } on DioException catch (error) {
+      if (!mounted) {
+        return;
+      }
+
+      final statusCode = error.response?.statusCode;
+
+      if (statusCode == 409) {
+        // Posible carrera: otra cancelación (o el propio Passenger)
+        // ya ganó. Reconciliamos con el estado real en vez de asumir.
+        await _loadRide(showLoading: false);
+
+        if (!mounted) {
+          return;
+        }
+
+        if (_ride == null) {
+          context.go('/home');
+
+          return;
+        }
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Otro proceso ya actualizó este viaje.')),
+        );
+
+        _resumeTimersAfterFailedCancel();
+
+        return;
+      }
+
+      if (statusCode == 400) {
+        // El estado dejó de ser cancelable (p.ej. avanzó a
+        // IN_PROGRESS). Recargamos para representar el estado real:
+        // esa pantalla ya no construye el botón de cancelar.
+        unawaited(_loadRide(showLoading: false));
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Ya no puedes cancelar este viaje en su estado actual.'),
+          ),
+        );
+
+        _resumeTimersAfterFailedCancel();
+
+        return;
+      }
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('No se pudo cancelar el viaje. Inténtalo nuevamente.'),
+        ),
+      );
+
+      _resumeTimersAfterFailedCancel();
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('No se pudo cancelar el viaje. Inténtalo nuevamente.'),
+        ),
+      );
+
+      _resumeTimersAfterFailedCancel();
+    } finally {
+      if (mounted) {
+        setState(() {
+          _cancelling = false;
+        });
+      }
+    }
+  }
+
+  /// El Ride sigue activo (falló la cancelación): se restaura
+  /// exactamente el mismo par de timers que `initState` arranca, sin
+  /// duplicar ninguno si por algún motivo ya existieran.
+  void _resumeTimersAfterFailedCancel() {
+    _rideTimer ??= Timer.periodic(const Duration(seconds: 3), (_) {
+      unawaited(_loadRide(showLoading: false));
+    });
+
+    if (_activityTimer == null) {
+      _startActivityTimer();
+    }
   }
 
   /// UI local previa al POST real: no cambia ningún status, solo
@@ -1161,7 +1314,7 @@ class _DriverActiveRideScreenState
                           const SizedBox(height: 22),
 
                           FilledButton.icon(
-                            onPressed: _changingStatus
+                            onPressed: (_changingStatus || _cancelling)
                                 ? null
                                 : (isArriving ? _arrive : _startArrival),
                             style: FilledButton.styleFrom(
@@ -1193,6 +1346,12 @@ class _DriverActiveRideScreenState
                                         : 'Ir a recoger al pasajero',
                               ),
                             ),
+                          ),
+
+                          _CancelRideButton(
+                            enabled: !_changingStatus && !_cancelling,
+                            cancelling: _cancelling,
+                            onPressed: _cancelRide,
                           ),
                         ],
                       ),
@@ -1301,7 +1460,10 @@ class _DriverActiveRideScreenState
                               final pinComplete =
                                   _codeController.text.length == 4;
                               final canSubmit =
-                                  pinComplete && !_changingStatus && !_pinLocked;
+                                  pinComplete &&
+                                  !_changingStatus &&
+                                  !_cancelling &&
+                                  !_pinLocked;
 
                               return FilledButton.icon(
                                 onPressed: canSubmit ? _startRide : null,
@@ -1330,6 +1492,12 @@ class _DriverActiveRideScreenState
                                 ),
                               );
                             },
+                          ),
+
+                          _CancelRideButton(
+                            enabled: !_changingStatus && !_cancelling,
+                            cancelling: _cancelling,
+                            onPressed: _cancelRide,
                           ),
                         ],
                       ),
@@ -1802,6 +1970,47 @@ class _DistanceChip extends StatelessWidget {
               ),
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------
+// Cancelación del Driver — widget de Checkpoint G1
+// ---------------------------------------------------------------------
+
+/// Acción secundaria y discreta a propósito: no debe competir
+/// visualmente con el CTA principal (Ir a recoger/Llegué/Iniciar
+/// viaje). Solo se construye desde DRIVER_ASSIGNED/DRIVER_ARRIVING/
+/// DRIVER_ARRIVED — IN_PROGRESS y COMPLETED nunca la incluyen.
+class _CancelRideButton extends StatelessWidget {
+  const _CancelRideButton({
+    required this.enabled,
+    required this.cancelling,
+    required this.onPressed,
+  });
+
+  final bool enabled;
+  final bool cancelling;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(top: 10),
+      child: Center(
+        child: TextButton.icon(
+          onPressed: enabled ? onPressed : null,
+          style: TextButton.styleFrom(foregroundColor: DriverPalette.brown),
+          icon: cancelling
+              ? const SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Icon(Icons.close, size: 18),
+          label: Text(cancelling ? 'Cancelando...' : 'Cancelar viaje'),
         ),
       ),
     );

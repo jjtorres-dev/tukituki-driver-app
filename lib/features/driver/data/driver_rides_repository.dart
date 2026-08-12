@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/network/api_client.dart';
 import '../domain/driver_active_ride.dart';
+import '../domain/driver_cancellation_reason.dart';
 import '../domain/driver_pending_payment.dart';
 import '../domain/driver_ride_completion.dart';
 
@@ -118,5 +119,29 @@ class DriverRidesRepository {
     }
 
     return DriverRideCompletion.fromJson(data);
+  }
+
+  /// Cancelación normal por el conductor. Solo válida mientras Backend
+  /// considera el Ride cancelable (`DRIVER_ASSIGNED`/`DRIVER_ARRIVING`/
+  /// `DRIVER_ARRIVED`); en `IN_PROGRESS` Backend responde 400. No se
+  /// modela la respuesta completa (`RideCancellationResponseDto`)
+  /// porque esta pantalla no necesita más que la confirmación de que
+  /// el POST tuvo éxito: al volver a Home, `getActiveRide()` ya no
+  /// devuelve este Ride.
+  Future<void> cancelRide({
+    required String rideId,
+    required DriverCancellationReason reason,
+    String? reasonDetail,
+  }) async {
+    final trimmedDetail = reasonDetail?.trim();
+
+    await _dio.post<Map<String, dynamic>>(
+      'drivers/me/rides/$rideId/cancel',
+      data: {
+        'reason': reason.value,
+        if (trimmedDetail != null && trimmedDetail.isNotEmpty)
+          'reasonDetail': trimmedDetail,
+      },
+    );
   }
 }
