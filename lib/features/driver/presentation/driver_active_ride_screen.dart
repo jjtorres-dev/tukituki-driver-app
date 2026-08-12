@@ -66,6 +66,11 @@ class _DriverActiveRideScreenState
   /// estado por otra vía real (no hay regeneración desde Driver).
   bool _pinLocked = false;
 
+  /// Último error real al intentar `complete`. Igual criterio que
+  /// `_pinError`: solo memoria de esta pantalla, se limpia al iniciar
+  /// un nuevo intento de finalización.
+  _CompleteSubmitError? _completeError;
+
   Timer? _rideTimer;
   Timer? _activityTimer;
 
@@ -78,6 +83,13 @@ class _DriverActiveRideScreenState
   /// `true` en cuanto ya se emitió el encuadre inicial Driver+pickup,
   /// para no reencuadrar la cámara en cada poll/heartbeat.
   bool _cameraFramed = false;
+
+  /// Igual que `_cameraFramed`, pero para el encuadre Driver+destino
+  /// de IN_PROGRESS. Es un guard independiente: el viaje normalmente
+  /// ya framó una vez hacia el pickup en un estado previo, y necesita
+  /// un segundo encuadre real (uno solo) hacia el destino al entrar a
+  /// IN_PROGRESS, sea por transición natural o por restore directo.
+  bool _destinationCameraFramed = false;
 
   DriverMapCameraRequest? _cameraRequest;
   int _cameraRequestSequence = 0;
@@ -334,16 +346,15 @@ class _DriverActiveRideScreenState
     }
   }
 
-  /// Encuadra la cámara UNA sola vez por instancia de esta pantalla
-  /// (Driver + pickup real), solo mientras el estado siga siendo
-  /// DRIVER_ASSIGNED/DRIVER_ARRIVING/DRIVER_ARRIVED y solo cuando ya
-  /// tenemos ambos puntos reales. No vuelve a dispararse en cada poll
-  /// de 3s ni en cada heartbeat de 10s: por eso el guard
-  /// `_cameraFramed`. Incluir DRIVER_ARRIVED (Checkpoint B) cubre el
-  /// restore directo a ese estado, que de otro modo nunca encuadraría
-  /// la cámara en esta sesión.
+  /// Punto de entrada único: decide qué encuadre corresponde según el
+  /// estado real del ride. IN_PROGRESS usa Driver+destino; los demás
+  /// estados pre-viaje usan Driver+pickup. Cada uno tiene su propio
+  /// guard de "una sola vez" (`_cameraFramed`/`_destinationCameraFramed`),
+  /// así que transicionar de un grupo al otro (p.ej. ARRIVED→IN_PROGRESS)
+  /// sí produce un segundo encuadre real, pero nunca se repite dentro
+  /// del mismo grupo en cada poll de 3s ni cada heartbeat de 10s.
   void _maybeFrameCamera() {
-    if (_cameraFramed || !mounted) {
+    if (!mounted) {
       return;
     }
 
@@ -351,6 +362,25 @@ class _DriverActiveRideScreenState
     final position = _driverPosition;
 
     if (ride == null || position == null) {
+      return;
+    }
+
+    if (ride.status == 'IN_PROGRESS') {
+      _maybeFrameDestinationCamera(ride, position);
+
+      return;
+    }
+
+    _maybeFramePickupCamera(ride, position);
+  }
+
+  /// Encuadra Driver + pickup real, solo mientras el estado siga
+  /// siendo DRIVER_ASSIGNED/DRIVER_ARRIVING/DRIVER_ARRIVED. Incluir
+  /// DRIVER_ARRIVED (Checkpoint B) cubre el restore directo a ese
+  /// estado, que de otro modo nunca encuadraría la cámara en esta
+  /// sesión.
+  void _maybeFramePickupCamera(DriverActiveRide ride, Position position) {
+    if (_cameraFramed) {
       return;
     }
 
@@ -374,6 +404,32 @@ class _DriverActiveRideScreenState
         id: ++_cameraRequestSequence,
         target: LatLng(position.latitude, position.longitude),
         secondaryTarget: LatLng(originLatitude, originLongitude),
+      );
+    });
+  }
+
+  /// Encuadra Driver + destino real (Checkpoint C), una sola vez por
+  /// instancia de esta pantalla — cubre tanto la transición natural
+  /// ARRIVED→IN_PROGRESS como el restore directo a IN_PROGRESS.
+  void _maybeFrameDestinationCamera(DriverActiveRide ride, Position position) {
+    if (_destinationCameraFramed) {
+      return;
+    }
+
+    final destinationLatitude = ride.destinationLatitude;
+    final destinationLongitude = ride.destinationLongitude;
+
+    if (destinationLatitude == null || destinationLongitude == null) {
+      return;
+    }
+
+    _destinationCameraFramed = true;
+
+    setState(() {
+      _cameraRequest = DriverMapCameraRequest(
+        id: ++_cameraRequestSequence,
+        target: LatLng(position.latitude, position.longitude),
+        secondaryTarget: LatLng(destinationLatitude, destinationLongitude),
       );
     });
   }
@@ -698,6 +754,43 @@ class _DriverActiveRideScreenState
     return const _PinSubmitError(_PinErrorKind.network);
   }
 
+  /// UI local previa al POST real: no cambia ningún status, solo
+  /// pregunta. Backend nunca se llama hasta que el Driver confirme
+  /// explícitamente "Sí, finalizar viaje".
+  Future<void> _confirmAndCompleteRide() async {
+    if (_ride == null || _changingStatus) {
+      return;
+    }
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text('¿Finalizar el viaje?'),
+          content: const Text(
+            'Confirma que llegaste al destino del pasajero.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(false),
+              child: const Text('Volver'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(dialogContext).pop(true),
+              child: const Text('Sí, finalizar viaje'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (confirmed != true || !mounted) {
+      return;
+    }
+
+    await _completeRide();
+  }
+
   Future<void> _completeRide() async {
     final ride = _ride;
 
@@ -707,6 +800,7 @@ class _DriverActiveRideScreenState
 
     setState(() {
       _changingStatus = true;
+      _completeError = null;
     });
 
     // MUY IMPORTANTE:
@@ -748,10 +842,6 @@ class _DriverActiveRideScreenState
       setState(() {
         _completion = completion;
       });
-
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('¡Viaje completado!')));
     } on _DriverLocationFailure catch (error) {
       debugPrint(
         'DRIVER COMPLETE LOCATION ERROR '
@@ -762,9 +852,12 @@ class _DriverActiveRideScreenState
         return;
       }
 
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text(error.message)));
+      setState(() {
+        _completeError = _CompleteSubmitError(
+          _CompleteErrorKind.quality,
+          message: error.message,
+        );
+      });
 
       _startActivityTimer();
     } on DioException catch (error) {
@@ -778,23 +871,17 @@ class _DriverActiveRideScreenState
         return;
       }
 
-      String message = 'No se pudo finalizar el viaje.';
+      final classified = _classifyCompleteError(error);
 
-      if (error.response?.statusCode == 400) {
-        message =
-            'El GPS no es válido o todavía '
-            'estás lejos del destino.';
-      } else if (error.response?.statusCode == 409) {
-        message =
-            'El viaje no está en un '
-            'estado compatible.';
-      } else if (error.response == null) {
-        message = 'No se pudo conectar con TukiTuki.';
+      setState(() {
+        _completeError = classified;
+      });
+
+      if (classified.kind == _CompleteErrorKind.conflict) {
+        // El Ride cambió de estado por otra vía: reutilizamos la
+        // recarga real en vez de inventar una transición local.
+        unawaited(_loadRide(showLoading: false));
       }
-
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text(message)));
 
       // Si falló completar, reanudamos
       // presencia para poder intentarlo otra vez.
@@ -808,36 +895,40 @@ class _DriverActiveRideScreenState
     }
   }
 
-  String _titleForStatus(String status) {
-    switch (status) {
-      case 'DRIVER_ASSIGNED':
-        return 'Pasajero asignado';
+  /// Clasifica el 400 real de `complete` en sus dos formas distintas
+  /// (distancia al destino vs calidad de GPS), igual criterio que
+  /// `_classifyStartRideError`: nunca asume que todo 400 es lo mismo.
+  /// Ver `ride-completion.service.ts`: el 400 de distancia trae
+  /// `distanceToDestinationMeters`/`maximumCompletionDistanceMeters`;
+  /// el 400 de calidad de GPS (ausente/vencido/impreciso) no trae
+  /// ninguno de los dos, solo un `message` de texto plano.
+  _CompleteSubmitError _classifyCompleteError(DioException error) {
+    final statusCode = error.response?.statusCode;
+    final data = error.response?.data;
 
-      case 'DRIVER_ARRIVING':
-        return 'En camino al pasajero';
+    if (statusCode == 400) {
+      final distance = data is Map ? data['distanceToDestinationMeters'] : null;
+      final maxDistance = data is Map
+          ? data['maximumCompletionDistanceMeters']
+          : null;
 
-      case 'IN_PROGRESS':
-        return 'Viaje en curso';
+      if (distance is num && maxDistance is num) {
+        return _CompleteSubmitError(
+          _CompleteErrorKind.distance,
+          message:
+              'Estás a ${distance.round()} m del destino '
+              '(máximo ${maxDistance.round()} m).',
+        );
+      }
 
-      default:
-        return status;
+      return const _CompleteSubmitError(_CompleteErrorKind.quality);
     }
-  }
 
-  IconData _iconForStatus(String status) {
-    switch (status) {
-      case 'DRIVER_ASSIGNED':
-        return Icons.person_pin_circle;
-
-      case 'DRIVER_ARRIVING':
-        return Icons.two_wheeler;
-
-      case 'IN_PROGRESS':
-        return Icons.route;
-
-      default:
-        return Icons.two_wheeler;
+    if (statusCode == 409) {
+      return const _CompleteSubmitError(_CompleteErrorKind.conflict);
     }
+
+    return const _CompleteSubmitError(_CompleteErrorKind.network);
   }
 
   @override
@@ -866,6 +957,10 @@ class _DriverActiveRideScreenState
 
     if (ride.status == 'DRIVER_ARRIVED') {
       return _buildArrivedScreen(ride);
+    }
+
+    if (ride.status == 'IN_PROGRESS') {
+      return _buildInProgressScreen(ride);
     }
 
     return _buildLegacyRideScreen(ride);
@@ -972,12 +1067,12 @@ class _DriverActiveRideScreenState
             children: [
               const SizedBox(height: 24),
 
-              Icon(_iconForStatus(ride.status), size: 90),
+              const Icon(Icons.two_wheeler, size: 90),
 
               const SizedBox(height: 24),
 
               Text(
-                _titleForStatus(ride.status),
+                ride.status,
                 textAlign: TextAlign.center,
                 style: const TextStyle(
                   fontSize: 30,
@@ -1022,49 +1117,6 @@ class _DriverActiveRideScreenState
               ),
 
               const SizedBox(height: 32),
-
-              if (ride.status == 'IN_PROGRESS') ...[
-                const Card(
-                  child: Padding(
-                    padding: EdgeInsets.all(24),
-                    child: Column(
-                      children: [
-                        Icon(Icons.route, size: 54),
-                        SizedBox(height: 12),
-                        Text(
-                          'Viaje en curso',
-                          style: TextStyle(
-                            fontSize: 22,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                        SizedBox(height: 8),
-                        Text(
-                          'Dirígete al destino '
-                          'del pasajero.',
-                          textAlign: TextAlign.center,
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-
-                const SizedBox(height: 24),
-
-                FilledButton.icon(
-                  onPressed: _changingStatus ? null : _completeRide,
-                  icon: const Icon(Icons.flag),
-                  label: Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 16),
-                    child: Text(
-                      _changingStatus
-                          ? 'Verificando destino...'
-                          : 'Llegué al destino y '
-                                'finalizar viaje',
-                    ),
-                  ),
-                ),
-              ],
             ],
           ),
         ),
@@ -1327,6 +1379,142 @@ class _DriverActiveRideScreenState
                                 ),
                               );
                             },
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            );
+          },
+        ),
+      ),
+    );
+  }
+
+  // ---------------------------------------------------------------------
+  // IN_PROGRESS — Checkpoint C
+  // ---------------------------------------------------------------------
+
+  Widget _buildInProgressScreen(DriverActiveRide ride) {
+    return Scaffold(
+      backgroundColor: DriverPalette.cream,
+      appBar: AppBar(
+        backgroundColor: DriverPalette.cream,
+        elevation: 0,
+        automaticallyImplyLeading: false,
+        foregroundColor: DriverPalette.greenPrimary,
+        title: const Text(
+          'Tu viaje',
+          style: TextStyle(fontWeight: FontWeight.w800),
+        ),
+      ),
+      body: SafeArea(
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            // El mapa es protagonista en IN_PROGRESS (más alto que en
+            // los estados previos a la llegada), pero sigue dejando
+            // suficiente espacio de sheet scrollable para que
+            // Passenger/tarifa/destino/CTA nunca queden inaccesibles
+            // en 360×640.
+            final mapHeight = (constraints.maxHeight * 0.48).clamp(
+              220.0,
+              380.0,
+            );
+
+            return Column(
+              children: [
+                SizedBox(
+                  height: mapHeight,
+                  width: double.infinity,
+                  child: DriverHomeMap(
+                    position: _driverPosition,
+                    myLocationEnabled: _driverPosition != null,
+                    cameraRequest: _cameraRequest,
+                    // Se reutiliza el mismo cálculo de Checkpoint A
+                    // (pickup verde + destino naranja): el pickup se
+                    // mantiene como contexto secundario real en vez
+                    // de omitirse, ya que sigue siendo un dato válido
+                    // y no cuesta nada adicional mostrarlo.
+                    markers: _rideMarkers(ride),
+                  ),
+                ),
+                Expanded(
+                  child: Container(
+                    width: double.infinity,
+                    decoration: const BoxDecoration(
+                      color: DriverPalette.cream,
+                      borderRadius: BorderRadius.vertical(
+                        top: Radius.circular(24),
+                      ),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black26,
+                          blurRadius: 14,
+                          offset: Offset(0, -3),
+                        ),
+                      ],
+                    ),
+                    child: SingleChildScrollView(
+                      padding: const EdgeInsets.fromLTRB(20, 22, 20, 24),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          const _InProgressStatusHeader(),
+
+                          const SizedBox(height: 16),
+
+                          const _ProgressStageRow(),
+
+                          const SizedBox(height: 16),
+
+                          _FareCard(fare: ride.displayFare),
+
+                          const SizedBox(height: 14),
+
+                          _PassengerCard(passenger: ride.passenger),
+
+                          const SizedBox(height: 14),
+
+                          _DestinationCard(
+                            destinationAddress: ride.destinationAddress,
+                          ),
+
+                          if (_completeError != null) ...[
+                            const SizedBox(height: 14),
+                            _CompleteErrorBanner(error: _completeError!),
+                          ],
+
+                          const SizedBox(height: 22),
+
+                          FilledButton.icon(
+                            onPressed: _changingStatus
+                                ? null
+                                : _confirmAndCompleteRide,
+                            style: FilledButton.styleFrom(
+                              backgroundColor: DriverPalette.greenPrimary,
+                            ),
+                            icon: _changingStatus
+                                ? const SizedBox(
+                                    width: 20,
+                                    height: 20,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                      color: Colors.white,
+                                    ),
+                                  )
+                                : const Icon(Icons.flag),
+                            label: Padding(
+                              padding: const EdgeInsets.symmetric(
+                                vertical: 16,
+                              ),
+                              child: Text(
+                                _changingStatus
+                                    ? 'Finalizando...'
+                                    : 'Llegué al destino y finalizar viaje',
+                              ),
+                            ),
                           ),
                         ],
                       ),
@@ -2050,4 +2238,228 @@ String _attemptsLabel(int remaining) {
   return remaining == 1
       ? '1 intento restante'
       : '$remaining intentos restantes';
+}
+
+// ---------------------------------------------------------------------
+// IN_PROGRESS — widgets de Checkpoint C
+// ---------------------------------------------------------------------
+
+class _InProgressStatusHeader extends StatelessWidget {
+  const _InProgressStatusHeader();
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        Container(
+          width: 56,
+          height: 56,
+          decoration: BoxDecoration(
+            color: DriverPalette.greenAvailable.withValues(alpha: 0.16),
+            shape: BoxShape.circle,
+          ),
+          child: const Icon(
+            Icons.route,
+            color: DriverPalette.greenAvailable,
+            size: 30,
+          ),
+        ),
+        const SizedBox(height: 14),
+        const Text(
+          'Viaje en curso',
+          textAlign: TextAlign.center,
+          style: TextStyle(
+            fontSize: 22,
+            fontWeight: FontWeight.w800,
+            color: DriverPalette.greenPrimary,
+          ),
+        ),
+        const SizedBox(height: 6),
+        const Text(
+          'Dirígete al destino del pasajero',
+          textAlign: TextAlign.center,
+          style: TextStyle(color: DriverPalette.brown),
+        ),
+      ],
+    );
+  }
+}
+
+/// Progreso puramente representacional (Backend no expone avance
+/// real al Driver): RECOJO siempre aparece cumplido porque
+/// IN_PROGRESS solo ocurre después de DRIVER_ARRIVED + PIN válido.
+/// Nunca un porcentaje ni una distancia/tiempo restante inventados.
+class _ProgressStageRow extends StatelessWidget {
+  const _ProgressStageRow();
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        const Icon(
+          Icons.check_circle,
+          size: 18,
+          color: DriverPalette.greenAvailable,
+        ),
+        const SizedBox(width: 6),
+        const Text(
+          'RECOJO',
+          style: TextStyle(
+            fontSize: 11,
+            fontWeight: FontWeight.w700,
+            letterSpacing: 0.5,
+            color: DriverPalette.greenAvailable,
+          ),
+        ),
+        Expanded(
+          child: Container(
+            margin: const EdgeInsets.symmetric(horizontal: 8),
+            height: 2,
+            color: DriverPalette.brown.withValues(alpha: 0.25),
+          ),
+        ),
+        const Text(
+          'DESTINO',
+          style: TextStyle(
+            fontSize: 11,
+            fontWeight: FontWeight.w700,
+            letterSpacing: 0.5,
+            color: DriverPalette.brown,
+          ),
+        ),
+        const SizedBox(width: 6),
+        const Icon(Icons.location_on, size: 18, color: DriverPalette.orange),
+      ],
+    );
+  }
+}
+
+class _DestinationCard extends StatelessWidget {
+  const _DestinationCard({required this.destinationAddress});
+
+  final String destinationAddress;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Icon(Icons.location_on, color: DriverPalette.orange),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'DESTINO DEL PASAJERO',
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: 0.5,
+                    color: DriverPalette.brown,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  destinationAddress,
+                  style: const TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                    color: DriverPalette.greenPrimary,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _CompleteErrorBanner extends StatelessWidget {
+  const _CompleteErrorBanner({required this.error});
+
+  final _CompleteSubmitError error;
+
+  @override
+  Widget build(BuildContext context) {
+    final title = _completeErrorTitle(error.kind);
+    final subtitle = _completeErrorSubtitle(error);
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Column(
+        children: [
+          Text(
+            title,
+            textAlign: TextAlign.center,
+            style: const TextStyle(
+              color: DriverPalette.coral,
+              fontWeight: FontWeight.w700,
+              fontSize: 14,
+            ),
+          ),
+          if (subtitle != null) ...[
+            const SizedBox(height: 4),
+            Text(
+              subtitle,
+              textAlign: TextAlign.center,
+              style: const TextStyle(color: DriverPalette.coral, fontSize: 12),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+enum _CompleteErrorKind { distance, quality, conflict, network }
+
+/// Error real de `complete` clasificado por tipo. `message` solo se
+/// llena con datos reales de Backend (o del propio GPS del
+/// dispositivo); nunca se fabrica una distancia.
+class _CompleteSubmitError {
+  const _CompleteSubmitError(this.kind, {this.message});
+
+  final _CompleteErrorKind kind;
+  final String? message;
+}
+
+String _completeErrorTitle(_CompleteErrorKind kind) {
+  switch (kind) {
+    case _CompleteErrorKind.distance:
+      return 'Aún estás lejos del destino';
+    case _CompleteErrorKind.quality:
+      return 'No pudimos validar tu ubicación';
+    case _CompleteErrorKind.conflict:
+      return 'El viaje cambió de estado';
+    case _CompleteErrorKind.network:
+      return 'No pudimos finalizar el viaje';
+  }
+}
+
+String? _completeErrorSubtitle(_CompleteSubmitError error) {
+  switch (error.kind) {
+    case _CompleteErrorKind.distance:
+      return error.message;
+    case _CompleteErrorKind.quality:
+      return error.message ?? 'Verifica tu GPS e inténtalo nuevamente.';
+    case _CompleteErrorKind.conflict:
+      return 'Actualizando...';
+    case _CompleteErrorKind.network:
+      return 'Inténtalo nuevamente.';
+  }
 }

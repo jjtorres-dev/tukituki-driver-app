@@ -11,6 +11,7 @@ import 'package:driver/features/driver/data/driver_rides_repository.dart';
 import 'package:driver/features/driver/domain/driver_active_ride.dart';
 import 'package:driver/features/driver/domain/driver_assigned_passenger.dart';
 import 'package:driver/features/driver/domain/driver_operational_state.dart';
+import 'package:driver/features/driver/domain/driver_ride_completion.dart';
 import 'package:driver/features/driver/presentation/driver_active_ride_screen.dart';
 import 'package:driver/features/driver/presentation/driver_home_map.dart';
 
@@ -847,6 +848,526 @@ void main() {
     });
   });
 
+  group('IN_PROGRESS', () {
+    testWidgets('A: renderiza "Viaje en curso"', (tester) async {
+      final ride = _rideFixture(status: 'IN_PROGRESS');
+      final rides = _FakeRidesRepository(activeRideQueue: [ride]);
+
+      await _pumpActiveRide(tester, rides: rides);
+      await tester.pump();
+
+      expect(find.text('Viaje en curso'), findsOneWidget);
+    });
+
+    testWidgets('B: muestra "Dirígete al destino del pasajero"', (
+      tester,
+    ) async {
+      final ride = _rideFixture(status: 'IN_PROGRESS');
+      final rides = _FakeRidesRepository(activeRideQueue: [ride]);
+
+      await _pumpActiveRide(tester, rides: rides);
+      await tester.pump();
+
+      expect(find.text('Dirígete al destino del pasajero'), findsOneWidget);
+    });
+
+    testWidgets('C: muestra Passenger real', (tester) async {
+      final ride = _rideFixture(
+        status: 'IN_PROGRESS',
+        passenger: const AssignedPassenger(
+          profileId: 'passenger-1',
+          firstName: 'Rosa',
+          ratingAverage: '4.85',
+          ratingCount: 32,
+        ),
+      );
+      final rides = _FakeRidesRepository(activeRideQueue: [ride]);
+
+      await _pumpActiveRide(tester, rides: rides);
+      await tester.pump();
+
+      expect(find.text('Rosa'), findsOneWidget);
+    });
+
+    testWidgets('D: muestra rating real cuando hay historial', (tester) async {
+      final withRating = _rideFixture(
+        status: 'IN_PROGRESS',
+        passenger: const AssignedPassenger(
+          profileId: 'passenger-1',
+          firstName: 'Rosa',
+          ratingAverage: '4.80',
+          ratingCount: 32,
+        ),
+      );
+      final rides = _FakeRidesRepository(activeRideQueue: [withRating]);
+
+      await _pumpActiveRide(tester, rides: rides);
+      await tester.pump();
+
+      expect(find.text('⭐ 4.8 · 32 calificaciones'), findsOneWidget);
+    });
+
+    testWidgets('D2: NO muestra rating sin historial (nunca "viajes")', (
+      tester,
+    ) async {
+      final withoutRating = _rideFixture(
+        status: 'IN_PROGRESS',
+        passenger: const AssignedPassenger(
+          profileId: 'passenger-1',
+          firstName: 'Rosa',
+          ratingAverage: '0.00',
+          ratingCount: 0,
+        ),
+      );
+      final ridesWithout = _FakeRidesRepository(
+        activeRideQueue: [withoutRating],
+      );
+
+      await _pumpActiveRide(tester, rides: ridesWithout);
+      await tester.pump();
+
+      expect(find.textContaining('⭐'), findsNothing);
+      expect(find.textContaining('viajes'), findsNothing);
+    });
+
+    testWidgets('E: muestra TARIFA ACORDADA real', (tester) async {
+      final ride = _rideFixture(
+        status: 'IN_PROGRESS',
+        agreedFare: '15.00',
+        estimatedFare: '99.99',
+      );
+      final rides = _FakeRidesRepository(activeRideQueue: [ride]);
+
+      await _pumpActiveRide(tester, rides: rides);
+      await tester.pump();
+
+      expect(find.text('TARIFA ACORDADA'), findsOneWidget);
+      expect(find.text('S/ 15.00'), findsOneWidget);
+      expect(find.text('S/ 99.99'), findsNothing);
+    });
+
+    testWidgets('F: muestra destinationAddress real', (tester) async {
+      final ride = _rideFixture(status: 'IN_PROGRESS');
+      final rides = _FakeRidesRepository(activeRideQueue: [ride]);
+
+      await _pumpActiveRide(tester, rides: rides);
+      await tester.pump();
+
+      expect(find.text(ride.destinationAddress), findsOneWidget);
+    });
+
+    testWidgets('G: muestra progreso RECOJO → DESTINO', (tester) async {
+      final ride = _rideFixture(status: 'IN_PROGRESS');
+      final rides = _FakeRidesRepository(activeRideQueue: [ride]);
+
+      await _pumpActiveRide(tester, rides: rides);
+      await tester.pump();
+
+      expect(find.text('RECOJO'), findsOneWidget);
+      expect(find.text('DESTINO'), findsOneWidget);
+    });
+
+    testWidgets('H/I/J: NO muestra ETA, minutos ni porcentaje', (
+      tester,
+    ) async {
+      final ride = _rideFixture(status: 'IN_PROGRESS');
+      final rides = _FakeRidesRepository(activeRideQueue: [ride]);
+
+      await _pumpActiveRide(tester, rides: rides);
+      await tester.pump();
+
+      final texts = _visibleTexts(tester).join(' | ');
+
+      expect(texts.toLowerCase(), isNot(contains('eta')));
+      expect(
+        RegExp(r'\d+\s*min\b', caseSensitive: false).hasMatch(texts),
+        isFalse,
+      );
+      expect(RegExp(r'\d+\s*%').hasMatch(texts), isFalse);
+    });
+
+    testWidgets('K: NO muestra phone/chat', (tester) async {
+      final ride = _rideFixture(status: 'IN_PROGRESS');
+      final rides = _FakeRidesRepository(activeRideQueue: [ride]);
+
+      await _pumpActiveRide(tester, rides: rides);
+      await tester.pump();
+
+      expect(find.byIcon(Icons.call), findsNothing);
+      expect(find.byIcon(Icons.chat), findsNothing);
+      expect(find.text('Llamar'), findsNothing);
+      expect(find.text('Chat'), findsNothing);
+      expect(find.text('WhatsApp'), findsNothing);
+    });
+
+    testWidgets('L: CTA "Llegué al destino y finalizar viaje" visible', (
+      tester,
+    ) async {
+      final ride = _rideFixture(status: 'IN_PROGRESS');
+      final rides = _FakeRidesRepository(activeRideQueue: [ride]);
+
+      await _pumpActiveRide(tester, rides: rides);
+      await tester.pump();
+
+      expect(
+        find.text('Llegué al destino y finalizar viaje'),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets(
+      'confirmación: tocar el CTA muestra el diálogo y NO llama completeRide',
+      (tester) async {
+        final ride = _rideFixture(status: 'IN_PROGRESS');
+        final rides = _FakeRidesRepository(activeRideQueue: [ride]);
+
+        await _pumpActiveRide(tester, rides: rides);
+        await tester.pump();
+
+        await tester.ensureVisible(
+          find.text('Llegué al destino y finalizar viaje'),
+        );
+        await tester.tap(find.text('Llegué al destino y finalizar viaje'));
+        await tester.pump();
+
+        expect(find.text('¿Finalizar el viaje?'), findsOneWidget);
+        expect(
+          find.text('Confirma que llegaste al destino del pasajero.'),
+          findsOneWidget,
+        );
+        expect(find.text('Volver'), findsOneWidget);
+        expect(find.text('Sí, finalizar viaje'), findsOneWidget);
+        expect(rides.completeRideCalls, 0);
+      },
+    );
+
+    testWidgets(
+      'cancelación: tocar "Volver" cierra el diálogo sin llamar complete',
+      (tester) async {
+        final ride = _rideFixture(status: 'IN_PROGRESS');
+        final rides = _FakeRidesRepository(activeRideQueue: [ride]);
+
+        await _pumpActiveRide(tester, rides: rides);
+        await tester.pump();
+
+        await tester.ensureVisible(
+          find.text('Llegué al destino y finalizar viaje'),
+        );
+        await tester.tap(find.text('Llegué al destino y finalizar viaje'));
+        await tester.pump();
+
+        await tester.tap(find.text('Volver'));
+        await tester.pump();
+
+        expect(find.text('¿Finalizar el viaje?'), findsNothing);
+        expect(rides.completeRideCalls, 0);
+        expect(find.text('Viaje en curso'), findsOneWidget);
+      },
+    );
+
+    testWidgets(
+      'éxito: confirmar llama completeRide exactamente una vez y muestra la pantalla legacy COMPLETED',
+      (tester) async {
+        final ride = _rideFixture(status: 'IN_PROGRESS');
+        final rides = _FakeRidesRepository(activeRideQueue: [ride])
+          ..completeRideQueue = [_completionFixture()];
+
+        await _pumpActiveRide(tester, rides: rides);
+        await tester.pump();
+
+        await tester.ensureVisible(
+          find.text('Llegué al destino y finalizar viaje'),
+        );
+        await tester.tap(find.text('Llegué al destino y finalizar viaje'));
+        await tester.pump();
+
+        await tester.tap(find.text('Sí, finalizar viaje'));
+        await tester.pump();
+        await tester.pump();
+
+        expect(rides.completeRideCalls, 1);
+        expect(find.text('¡Viaje completado!'), findsOneWidget);
+      },
+    );
+
+    testWidgets(
+      'no cambia status local antes de la respuesta real (gate)',
+      (tester) async {
+        final ride = _rideFixture(status: 'IN_PROGRESS');
+        final rides = _FakeRidesRepository(activeRideQueue: [ride])
+          ..completeRideGate = Completer<DriverRideCompletion>();
+
+        await _pumpActiveRide(tester, rides: rides);
+        await tester.pump();
+
+        await tester.ensureVisible(
+          find.text('Llegué al destino y finalizar viaje'),
+        );
+        await tester.tap(find.text('Llegué al destino y finalizar viaje'));
+        await tester.pump();
+        await tester.tap(find.text('Sí, finalizar viaje'));
+        await tester.pump();
+
+        expect(find.text('Viaje en curso'), findsOneWidget);
+        expect(find.text('¡Viaje completado!'), findsNothing);
+
+        rides.completeRideGate!.complete(_completionFixture());
+        await tester.pump();
+        await tester.pump();
+
+        expect(find.text('¡Viaje completado!'), findsOneWidget);
+      },
+    );
+
+    testWidgets(
+      'GPS distancia: 400 con distanceToDestinationMeters muestra mensaje real, sigue IN_PROGRESS',
+      (tester) async {
+        final ride = _rideFixture(status: 'IN_PROGRESS');
+        final rides = _FakeRidesRepository(activeRideQueue: [ride])
+          ..completeRideQueue = [
+            _dioError(
+              statusCode: 400,
+              data: const {
+                'message': 'Debes estar cerca del destino',
+                'distanceToDestinationMeters': 310,
+                'maximumCompletionDistanceMeters': 250,
+              },
+            ),
+          ];
+
+        await _pumpActiveRide(tester, rides: rides);
+        await tester.pump();
+
+        await tester.ensureVisible(
+          find.text('Llegué al destino y finalizar viaje'),
+        );
+        await tester.tap(find.text('Llegué al destino y finalizar viaje'));
+        await tester.pump();
+        await tester.tap(find.text('Sí, finalizar viaje'));
+        await tester.pump();
+        await tester.pump();
+
+        expect(find.text('Aún estás lejos del destino'), findsOneWidget);
+        expect(
+          find.text('Estás a 310 m del destino (máximo 250 m).'),
+          findsOneWidget,
+        );
+        expect(find.text('Viaje en curso'), findsOneWidget);
+      },
+    );
+
+    testWidgets(
+      'GPS calidad: 400 sin distance fields muestra mensaje de ubicación genérico',
+      (tester) async {
+        final ride = _rideFixture(status: 'IN_PROGRESS');
+        final rides = _FakeRidesRepository(activeRideQueue: [ride])
+          ..completeRideQueue = [
+            _dioError(
+              statusCode: 400,
+              data: const {
+                'message':
+                    'La precisión GPS no es suficiente para finalizar el viaje',
+              },
+            ),
+          ];
+
+        await _pumpActiveRide(tester, rides: rides);
+        await tester.pump();
+
+        await tester.ensureVisible(
+          find.text('Llegué al destino y finalizar viaje'),
+        );
+        await tester.tap(find.text('Llegué al destino y finalizar viaje'));
+        await tester.pump();
+        await tester.tap(find.text('Sí, finalizar viaje'));
+        await tester.pump();
+        await tester.pump();
+
+        expect(find.text('No pudimos validar tu ubicación'), findsOneWidget);
+        expect(
+          find.text('Verifica tu GPS e inténtalo nuevamente.'),
+          findsOneWidget,
+        );
+        expect(find.text('Aún estás lejos del destino'), findsNothing);
+      },
+    );
+
+    testWidgets('409: muestra actualización de estado y reconsulta el ride', (
+      tester,
+    ) async {
+      final ride = _rideFixture(status: 'IN_PROGRESS');
+      final rides = _FakeRidesRepository(activeRideQueue: [ride, ride])
+        ..completeRideQueue = [
+          _dioError(
+            statusCode: 409,
+            data: const {
+              'message': 'El viaje debe estar en IN_PROGRESS para finalizarse',
+            },
+          ),
+        ];
+
+      await _pumpActiveRide(tester, rides: rides);
+      await tester.pump();
+
+      await tester.ensureVisible(
+        find.text('Llegué al destino y finalizar viaje'),
+      );
+      await tester.tap(find.text('Llegué al destino y finalizar viaje'));
+      await tester.pump();
+      await tester.tap(find.text('Sí, finalizar viaje'));
+      await tester.pump();
+      await tester.pump();
+
+      expect(find.text('El viaje cambió de estado'), findsOneWidget);
+      expect(rides.getActiveRideCalls, greaterThanOrEqualTo(2));
+    });
+
+    testWidgets(
+      'network/5xx: muestra mensaje de retry, no pierde el ride',
+      (tester) async {
+        final ride = _rideFixture(status: 'IN_PROGRESS');
+        final rides = _FakeRidesRepository(activeRideQueue: [ride])
+          ..completeRideQueue = [_dioNetworkError()];
+
+        await _pumpActiveRide(tester, rides: rides);
+        await tester.pump();
+
+        await tester.ensureVisible(
+          find.text('Llegué al destino y finalizar viaje'),
+        );
+        await tester.tap(find.text('Llegué al destino y finalizar viaje'));
+        await tester.pump();
+        await tester.tap(find.text('Sí, finalizar viaje'));
+        await tester.pump();
+        await tester.pump();
+
+        expect(find.text('No pudimos finalizar el viaje'), findsOneWidget);
+        expect(find.text('Inténtalo nuevamente.'), findsOneWidget);
+        expect(find.text('Viaje en curso'), findsOneWidget);
+      },
+    );
+
+    testWidgets('restore: monta directo en IN_PROGRESS sin pasar por otros estados', (
+      tester,
+    ) async {
+      final ride = _rideFixture(status: 'IN_PROGRESS');
+      final rides = _FakeRidesRepository(activeRideQueue: [ride]);
+
+      await _pumpActiveRide(tester, rides: rides);
+      await tester.pump();
+
+      expect(find.text('Viaje en curso'), findsOneWidget);
+      expect(find.text('S/ ${ride.displayFare}'), findsOneWidget);
+      expect(find.text(ride.passenger!.firstName), findsOneWidget);
+      expect(find.text(ride.destinationAddress), findsOneWidget);
+      expect(rides.getActiveRideCalls, greaterThanOrEqualTo(1));
+    });
+
+    group('Mapa', () {
+      testWidgets(
+        'destination marker cuando hay coordenadas válidas',
+        (tester) async {
+          DriverHomeMapResolved? resolved;
+
+          driverHomeMapBuilderOverride = (context, config) {
+            resolved = config;
+            return const SizedBox.shrink();
+          };
+
+          final ride = _rideFixture(status: 'IN_PROGRESS');
+          final rides = _FakeRidesRepository(activeRideQueue: [ride]);
+
+          await _pumpActiveRide(tester, rides: rides);
+          await tester.pump();
+          await tester.pump();
+
+          expect(resolved, isNotNull);
+          expect(resolved!.markers, hasLength(2));
+        },
+      );
+
+      testWidgets(
+        'ausencia segura de destination marker si la coordenada es inválida/null',
+        (tester) async {
+          DriverHomeMapResolved? resolved;
+
+          driverHomeMapBuilderOverride = (context, config) {
+            resolved = config;
+            return const SizedBox.shrink();
+          };
+
+          final ride = _rideFixture(
+            status: 'IN_PROGRESS',
+            destinationLatitude: null,
+            destinationLongitude: null,
+          );
+          final rides = _FakeRidesRepository(activeRideQueue: [ride]);
+
+          await _pumpActiveRide(tester, rides: rides);
+          await tester.pump();
+          await tester.pump();
+
+          expect(resolved, isNotNull);
+          expect(resolved!.markers, hasLength(1));
+        },
+      );
+
+      testWidgets(
+        'el encuadre Driver+destino se solicita una sola vez',
+        (tester) async {
+          final ride = _rideFixture(status: 'IN_PROGRESS');
+          final rides = _FakeRidesRepository(activeRideQueue: [ride]);
+
+          await _pumpActiveRide(tester, rides: rides);
+          await tester.pump();
+          await tester.pump();
+
+          final dynamic state = tester.state(
+            find.byType(DriverActiveRideScreen),
+          );
+
+          final firstRequest = state.debugCameraRequest;
+          expect(firstRequest, isNotNull);
+          expect(firstRequest.secondaryTarget, isNotNull);
+
+          await tester.pump(const Duration(seconds: 3));
+          await tester.pump(const Duration(seconds: 10));
+
+          expect(state.debugCameraRequest, same(firstRequest));
+        },
+      );
+    });
+
+    group('Responsive', () {
+      testWidgets('360x640 sin overflow', (tester) async {
+        tester.view.physicalSize = const Size(360, 640);
+        tester.view.devicePixelRatio = 1;
+        addTearDown(tester.view.resetPhysicalSize);
+        addTearDown(tester.view.resetDevicePixelRatio);
+
+        await _pumpInProgressStressScenario(tester);
+      });
+
+      testWidgets('390x844 sin overflow', (tester) async {
+        tester.view.physicalSize = const Size(390, 844);
+        tester.view.devicePixelRatio = 1;
+        addTearDown(tester.view.resetPhysicalSize);
+        addTearDown(tester.view.resetDevicePixelRatio);
+
+        await _pumpInProgressStressScenario(tester);
+      });
+
+      testWidgets('412x915 sin overflow', (tester) async {
+        tester.view.physicalSize = const Size(412, 915);
+        tester.view.devicePixelRatio = 1;
+        addTearDown(tester.view.resetPhysicalSize);
+        addTearDown(tester.view.resetDevicePixelRatio);
+
+        await _pumpInProgressStressScenario(tester);
+      });
+    });
+  });
+
   group('Mapa — markers reales', () {
     testWidgets(
       'pickup y destino se agregan como markers cuando hay coordenadas',
@@ -1126,6 +1647,71 @@ Future<void> _pumpArrivedStressScenario(WidgetTester tester) async {
   expect(tester.takeException(), isNull);
 }
 
+Future<void> _pumpInProgressStressScenario(WidgetTester tester) async {
+  final ride = _rideFixture(
+    status: 'IN_PROGRESS',
+    agreedFare: '125.50',
+    destinationAddress:
+        'Avenida Circunvalación Norte 5678, Sector Industrial La Molina, Morales',
+    passenger: const AssignedPassenger(
+      profileId: 'passenger-1',
+      firstName: 'Guillermina Alejandra del Rosario',
+      ratingAverage: '4.90',
+      ratingCount: 1874,
+    ),
+  );
+
+  final rides = _FakeRidesRepository(activeRideQueue: [ride])
+    ..completeRideQueue = [
+      _dioError(
+        statusCode: 400,
+        data: const {
+          'message': 'Debes estar cerca del destino',
+          'distanceToDestinationMeters': 340,
+          'maximumCompletionDistanceMeters': 250,
+        },
+      ),
+    ];
+
+  await _pumpActiveRide(tester, rides: rides);
+  await tester.pump();
+  await tester.pump(const Duration(milliseconds: 50));
+
+  expect(tester.takeException(), isNull);
+
+  await tester.ensureVisible(
+    find.text('Llegué al destino y finalizar viaje'),
+  );
+  await tester.tap(find.text('Llegué al destino y finalizar viaje'));
+  await tester.pump();
+
+  expect(tester.takeException(), isNull);
+
+  await tester.tap(find.text('Sí, finalizar viaje'));
+  await tester.pump();
+  await tester.pump(const Duration(milliseconds: 50));
+
+  expect(tester.takeException(), isNull);
+}
+
+DriverRideCompletion _completionFixture({String rideId = 'ride-1'}) {
+  return DriverRideCompletion(
+    rideId: rideId,
+    status: 'COMPLETED',
+    completedAt: DateTime.utc(2026, 8, 10, 12),
+    actualDistanceMeters: 3200,
+    actualDurationSeconds: 780,
+    estimatedFare: '8.00',
+    finalFare: '8.00',
+    discountAmount: '0.00',
+    passengerAmountDue: '8.00',
+    currency: 'PEN',
+    fareWasCapped: false,
+    paymentMethod: 'CASH',
+    paymentStatus: 'PENDING',
+  );
+}
+
 Finder _pinBoxFinder(int index) => find.byKey(ValueKey('pin-box-$index'));
 
 String _pinBoxDigit(WidgetTester tester, int index) {
@@ -1241,10 +1827,16 @@ class _FakeRidesRepository extends DriverRidesRepository {
   int startArrivalCalls = 0;
   int arriveCalls = 0;
   int startRideCalls = 0;
+  int completeRideCalls = 0;
 
   Completer<DriverActiveRide>? startArrivalGate;
   Completer<DriverActiveRide>? arriveGate;
   Completer<DriverActiveRide>? startRideGate;
+  Completer<DriverRideCompletion>? completeRideGate;
+
+  /// Elemento: [DriverRideCompletion] (éxito) o [DioException] (falla).
+  /// Si tiene un solo elemento, se repite en cada llamada.
+  List<Object>? completeRideQueue;
 
   DriverActiveRide? startArrivalResult;
   DriverActiveRide? arriveResult;
@@ -1323,6 +1915,31 @@ class _FakeRidesRepository extends DriverRidesRepository {
     }
 
     return next as DriverActiveRide;
+  }
+
+  @override
+  Future<DriverRideCompletion> completeRide({required String rideId}) async {
+    completeRideCalls++;
+
+    final gate = completeRideGate;
+
+    if (gate != null) {
+      return gate.future;
+    }
+
+    final queue = completeRideQueue;
+
+    if (queue == null || queue.isEmpty) {
+      throw StateError('completeRideQueue no configurado en el fake');
+    }
+
+    final next = queue.length > 1 ? queue.removeAt(0) : queue.first;
+
+    if (next is DioException) {
+      throw next;
+    }
+
+    return next as DriverRideCompletion;
   }
 }
 
