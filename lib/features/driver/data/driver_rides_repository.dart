@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/network/api_client.dart';
 import '../domain/driver_active_ride.dart';
+import '../domain/driver_pending_payment.dart';
 import '../domain/driver_ride_completion.dart';
 
 final driverRidesRepositoryProvider = Provider((ref) {
@@ -34,6 +35,23 @@ class DriverRidesRepository {
 
       rethrow;
     }
+  }
+
+  /// Rides COMPLETED del conductor con `RidePayment` todavía PENDING,
+  /// ya ordenados `completedAt DESC` por Backend. Puede incluir
+  /// métodos distintos de CASH: filtrar corresponde a quien consuma
+  /// esta lista (Home restore), no a este repositorio.
+  Future<List<DriverPendingPayment>> getPendingPayments() async {
+    final response = await _dio.get<List<dynamic>>(
+      'drivers/me/rides/pending-payments',
+    );
+
+    final data = response.data ?? const [];
+
+    return data
+        .whereType<Map<String, dynamic>>()
+        .map(DriverPendingPayment.fromJson)
+        .toList();
   }
 
   Future<DriverActiveRide> getRide(String rideId) async {

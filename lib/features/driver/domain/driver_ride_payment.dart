@@ -10,6 +10,7 @@ class DriverRidePayment {
     required this.currency,
     this.cashReceived,
     this.changeGiven,
+    this.confirmedAt,
   });
 
   final String id;
@@ -25,6 +26,9 @@ class DriverRidePayment {
   final String? cashReceived;
   final String? changeGiven;
 
+  /// Solo presente una vez que Backend confirmó el cobro (PAID).
+  final DateTime? confirmedAt;
+
   final String currency;
 
   factory DriverRidePayment.fromJson(Map<String, dynamic> json) {
@@ -38,6 +42,9 @@ class DriverRidePayment {
       discountAmount: json['discountAmount']?.toString() ?? '0.00',
       cashReceived: json['cashReceived']?.toString(),
       changeGiven: json['changeGiven']?.toString(),
+      confirmedAt: json['confirmedAt'] != null
+          ? DateTime.tryParse(json['confirmedAt'].toString())
+          : null,
       currency: json['currency']?.toString() ?? 'PEN',
     );
   }

@@ -1,10 +1,15 @@
+import 'dart:async';
+
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../../core/theme/driver_palette.dart';
 import '../data/driver_payments_repository.dart';
+import '../data/driver_rides_repository.dart';
+import '../domain/driver_money.dart';
 import '../domain/driver_ride_payment.dart';
 
 class DriverCashPaymentScreen extends ConsumerStatefulWidget {
@@ -17,28 +22,65 @@ class DriverCashPaymentScreen extends ConsumerStatefulWidget {
       _DriverCashPaymentScreenState();
 }
 
+enum _CashConfirmErrorKind { insufficient, notFound, conflict, network }
+
+class _CashConfirmError {
+  const _CashConfirmError(this.kind);
+
+  final _CashConfirmErrorKind kind;
+}
+
 class _DriverCashPaymentScreenState
     extends ConsumerState<DriverCashPaymentScreen> {
   final _cashController = TextEditingController();
 
   DriverRidePayment? _payment;
 
+  /// Best-effort: solo se llena si `getRide` responde con Passenger
+  /// real. Un fallo aquí nunca bloquea el cobro, solo deja el
+  /// subtítulo neutral.
+  String? _passengerFirstName;
+
   bool _loading = true;
   bool _confirming = false;
 
-  String? _error;
+  int? _cashCents;
+
+  String? _loadError;
+  _CashConfirmError? _confirmError;
 
   @override
   void initState() {
     super.initState();
 
-    _loadPayment();
+    _cashController.addListener(_handleCashChanged);
+
+    unawaited(_loadPayment());
   }
 
   @override
   void dispose() {
+    _cashController.removeListener(_handleCashChanged);
     _cashController.dispose();
     super.dispose();
+  }
+
+  void _handleCashChanged() {
+    final normalized = _cashController.text.trim().replaceAll(',', '.');
+
+    setState(() {
+      _cashCents = parseAmountToCents(normalized);
+    });
+  }
+
+  int get _dueCents {
+    final payment = _payment;
+
+    if (payment == null) {
+      return 0;
+    }
+
+    return parseAmountToCents(payment.amountDue) ?? 0;
   }
 
   Future<void> _loadPayment() async {
@@ -54,8 +96,10 @@ class _DriverCashPaymentScreenState
       setState(() {
         _payment = payment;
         _loading = false;
-        _error = null;
+        _loadError = null;
       });
+
+      unawaited(_loadPassengerFirstName());
     } catch (error) {
       debugPrint('Error consultando pago: $error');
 
@@ -65,57 +109,106 @@ class _DriverCashPaymentScreenState
 
       setState(() {
         _loading = false;
-        _error = 'No se pudo consultar el pago del viaje.';
+        _loadError = 'No se pudo consultar el pago del viaje.';
       });
     }
   }
 
-  Future<void> _confirmCashPayment() async {
+  Future<void> _loadPassengerFirstName() async {
+    try {
+      final ride = await ref
+          .read(driverRidesRepositoryProvider)
+          .getRide(widget.rideId);
+
+      if (!mounted) {
+        return;
+      }
+
+      final firstName = ride.passenger?.firstName;
+
+      if (firstName != null && firstName.isNotEmpty) {
+        setState(() {
+          _passengerFirstName = firstName;
+        });
+      }
+    } catch (error) {
+      // Puramente informativo para el subtítulo: nunca bloquea el
+      // flujo de cobro si falla.
+      debugPrint('DRIVER CASH PASSENGER LOOKUP ERROR: $error');
+    }
+  }
+
+  void _applyQuickAmount(int cents) {
+    if (_confirming) {
+      return;
+    }
+
+    final formatted = formatCentsAsDecimal(cents);
+
+    _cashController.text = formatted;
+    _cashController.selection = TextSelection.collapsed(
+      offset: formatted.length,
+    );
+  }
+
+  Future<void> _confirmAndSubmit() async {
     final payment = _payment;
+    final cents = _cashCents;
 
-    if (payment == null || _confirming) {
+    if (payment == null || cents == null || cents < _dueCents || _confirming) {
       return;
     }
 
-    final rawValue = _cashController.text.trim().replaceAll(',', '.');
-
-    final cashValue = double.tryParse(rawValue);
-
-    if (cashValue == null || cashValue <= 0) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('Ingresa un monto válido.')));
-
-      return;
-    }
-
-    final amountDue = double.tryParse(payment.amountDue) ?? 0;
-
-    if (cashValue < amountDue) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            'El efectivo debe cubrir al menos '
-            'S/ ${payment.amountDue}.',
-          ),
-        ),
-      );
-
-      return;
-    }
+    final changeCents = cents - _dueCents;
 
     FocusScope.of(context).unfocus();
 
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text('¿Confirmar pago recibido?'),
+          content: Text(
+            'El pasajero entregó S/ ${formatCentsAsDecimal(cents)}.\n'
+            'Vuelto a entregar: S/ ${formatCentsAsDecimal(changeCents)}.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(false),
+              child: const Text('Volver'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(dialogContext).pop(true),
+              child: const Text('Sí, confirmar pago'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (confirmed != true || !mounted) {
+      return;
+    }
+
+    await _submitConfirmCash(cents);
+  }
+
+  Future<void> _submitConfirmCash(int cents) async {
+    if (_confirming) {
+      return;
+    }
+
     setState(() {
       _confirming = true;
+      _confirmError = null;
     });
 
     try {
       final confirmed = await ref
           .read(driverPaymentsRepositoryProvider)
           .confirmCashPayment(
-            rideId: payment.rideId,
-            cashReceived: cashValue.toStringAsFixed(2),
+            rideId: widget.rideId,
+            cashReceived: formatCentsAsDecimal(cents),
           );
 
       if (!mounted) {
@@ -125,40 +218,67 @@ class _DriverCashPaymentScreenState
       setState(() {
         _payment = confirmed;
       });
-
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('¡Pago confirmado!')));
     } on DioException catch (error) {
+      debugPrint(
+        'DRIVER CASH CONFIRM ERROR '
+        'status=${error.response?.statusCode} '
+        'data=${error.response?.data}',
+      );
+
       if (!mounted) {
         return;
       }
 
-      String message = 'No se pudo confirmar el pago.';
+      setState(() {
+        _confirmError = _classifyConfirmError(error);
+      });
+    } catch (error) {
+      debugPrint('DRIVER CASH CONFIRM ERROR: $error');
 
-      if (error.response?.statusCode == 400) {
-        message =
-            'El efectivo recibido no cubre '
-            'la tarifa final.';
-      } else if (error.response?.statusCode == 409) {
-        message =
-            'Este pago ya fue confirmado '
-            'o ya no puede modificarse.';
-      } else if (error.response?.statusCode == 404) {
-        message = 'No encontramos el pago del viaje.';
-      } else if (error.response == null) {
-        message = 'No se pudo conectar con TukiTuki.';
+      if (!mounted) {
+        return;
       }
 
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text(message)));
+      setState(() {
+        _confirmError = const _CashConfirmError(_CashConfirmErrorKind.network);
+      });
     } finally {
       if (mounted) {
         setState(() {
           _confirming = false;
         });
       }
+    }
+  }
+
+  _CashConfirmError _classifyConfirmError(DioException error) {
+    final statusCode = error.response?.statusCode;
+
+    if (statusCode == 400) {
+      return const _CashConfirmError(_CashConfirmErrorKind.insufficient);
+    }
+
+    if (statusCode == 404) {
+      return const _CashConfirmError(_CashConfirmErrorKind.notFound);
+    }
+
+    if (statusCode == 409) {
+      return const _CashConfirmError(_CashConfirmErrorKind.conflict);
+    }
+
+    return const _CashConfirmError(_CashConfirmErrorKind.network);
+  }
+
+  String _confirmErrorMessage(_CashConfirmErrorKind kind) {
+    switch (kind) {
+      case _CashConfirmErrorKind.insufficient:
+        return 'El efectivo no cubre el monto a cobrar.';
+      case _CashConfirmErrorKind.notFound:
+        return 'No encontramos el pago de este viaje.';
+      case _CashConfirmErrorKind.conflict:
+        return 'Este pago ya no puede confirmarse.';
+      case _CashConfirmErrorKind.network:
+        return 'No se pudo conectar con TukiTuki. Inténtalo nuevamente.';
     }
   }
 
@@ -174,12 +294,12 @@ class _DriverCashPaymentScreenState
 
     if (payment == null) {
       return Scaffold(
-        appBar: AppBar(title: const Text('Cobro del viaje')),
+        appBar: AppBar(title: const Text('Cobrar viaje')),
         body: Center(
           child: Padding(
             padding: const EdgeInsets.all(24),
             child: Text(
-              _error ?? 'No se pudo consultar el pago.',
+              _loadError ?? 'No se pudo consultar el pago.',
               textAlign: TextAlign.center,
             ),
           ),
@@ -190,8 +310,12 @@ class _DriverCashPaymentScreenState
     final paid = payment.status == 'PAID';
 
     return Scaffold(
+      backgroundColor: DriverPalette.cream,
       appBar: AppBar(
+        backgroundColor: DriverPalette.cream,
+        elevation: 0,
         automaticallyImplyLeading: false,
+        foregroundColor: DriverPalette.greenPrimary,
         title: Text(paid ? 'Pago confirmado' : 'Cobrar viaje'),
       ),
       body: SafeArea(
@@ -200,41 +324,48 @@ class _DriverCashPaymentScreenState
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              const SizedBox(height: 40),
+              const SizedBox(height: 16),
 
-              Icon(paid ? Icons.check_circle : Icons.payments, size: 90),
+              Icon(
+                paid ? Icons.check_circle : Icons.payments,
+                size: 72,
+                color: paid ? DriverPalette.greenAvailable : DriverPalette.amber,
+              ),
 
-              const SizedBox(height: 24),
+              const SizedBox(height: 20),
 
               Text(
                 paid ? '¡Pago recibido!' : 'Cobro en efectivo',
                 textAlign: TextAlign.center,
                 style: const TextStyle(
-                  fontSize: 30,
-                  fontWeight: FontWeight.bold,
+                  fontSize: 26,
+                  fontWeight: FontWeight.w800,
+                  color: DriverPalette.greenPrimary,
                 ),
               ),
-
-              const SizedBox(height: 16),
-
-              const Text('Total a cobrar', textAlign: TextAlign.center),
-
-              const SizedBox(height: 8),
-
-              Text(
-                'S/ ${payment.amountDue}',
-                textAlign: TextAlign.center,
-                style: const TextStyle(
-                  fontSize: 44,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-
-              const SizedBox(height: 32),
 
               if (!paid) ...[
+                const SizedBox(height: 8),
+                Text(
+                  _passengerFirstName != null
+                      ? 'Ingresa el monto que te entregó '
+                            '$_passengerFirstName'
+                      : 'Ingresa el monto que te entregó el pasajero',
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(color: DriverPalette.brown),
+                ),
+              ],
+
+              const SizedBox(height: 24),
+
+              _TotalDueCard(amountDue: payment.amountDue),
+
+              if (!paid) ...[
+                const SizedBox(height: 24),
+
                 TextField(
                   controller: _cashController,
+                  enabled: !_confirming,
                   keyboardType: const TextInputType.numberWithOptions(
                     decimal: true,
                   ),
@@ -247,19 +378,52 @@ class _DriverCashPaymentScreenState
                     labelText: 'Efectivo recibido',
                     prefixText: 'S/ ',
                     border: OutlineInputBorder(),
-                    helperText: 'Ejemplo: 10.00',
                   ),
                 ),
+
+                const SizedBox(height: 14),
+
+                _QuickAmountsRow(
+                  amountsCents: quickAmountsForDueCents(_dueCents),
+                  enabled: !_confirming,
+                  onSelected: _applyQuickAmount,
+                ),
+
+                if (_cashCents != null) ...[
+                  const SizedBox(height: 18),
+                  _ChangePreviewCard(
+                    cashCents: _cashCents!,
+                    dueCents: _dueCents,
+                  ),
+                ],
+
+                if (_confirmError != null) ...[
+                  const SizedBox(height: 14),
+                  _ErrorBanner(
+                    message: _confirmErrorMessage(_confirmError!.kind),
+                  ),
+                ],
 
                 const SizedBox(height: 24),
 
                 FilledButton.icon(
-                  onPressed: _confirming ? null : _confirmCashPayment,
+                  onPressed:
+                      (_cashCents != null &&
+                          _cashCents! >= _dueCents &&
+                          !_confirming)
+                      ? _confirmAndSubmit
+                      : null,
+                  style: FilledButton.styleFrom(
+                    backgroundColor: DriverPalette.greenPrimary,
+                  ),
                   icon: _confirming
                       ? const SizedBox(
                           width: 20,
                           height: 20,
-                          child: CircularProgressIndicator(strokeWidth: 2),
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: Colors.white,
+                          ),
                         )
                       : const Icon(Icons.check),
                   label: Padding(
@@ -272,6 +436,7 @@ class _DriverCashPaymentScreenState
               ],
 
               if (paid) ...[
+                const SizedBox(height: 24),
                 Card(
                   child: Padding(
                     padding: const EdgeInsets.all(22),
@@ -317,13 +482,181 @@ class _DriverCashPaymentScreenState
                   ),
                 ),
               ],
-
-              if (_error != null) ...[
-                const SizedBox(height: 20),
-                Text(_error!, textAlign: TextAlign.center),
-              ],
             ],
           ),
+        ),
+      ),
+    );
+  }
+}
+
+class _TotalDueCard extends StatelessWidget {
+  const _TotalDueCard({required this.amountDue});
+
+  final String amountDue;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(vertical: 18),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Column(
+        children: [
+          const Text(
+            'TOTAL A COBRAR',
+            style: TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w700,
+              letterSpacing: 0.6,
+              color: DriverPalette.brown,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            'S/ $amountDue',
+            style: const TextStyle(
+              fontSize: 40,
+              fontWeight: FontWeight.w800,
+              color: DriverPalette.greenPrimary,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _QuickAmountsRow extends StatelessWidget {
+  const _QuickAmountsRow({
+    required this.amountsCents,
+    required this.enabled,
+    required this.onSelected,
+  });
+
+  final List<int> amountsCents;
+  final bool enabled;
+  final ValueChanged<int> onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        for (var index = 0; index < amountsCents.length; index++) ...[
+          if (index > 0) const SizedBox(width: 10),
+          Expanded(
+            child: OutlinedButton(
+              key: ValueKey('quick-amount-$index'),
+              onPressed: enabled
+                  ? () => onSelected(amountsCents[index])
+                  : null,
+              child: Text('S/ ${formatCentsAsDecimal(amountsCents[index])}'),
+            ),
+          ),
+        ],
+      ],
+    );
+  }
+}
+
+class _ChangePreviewCard extends StatelessWidget {
+  const _ChangePreviewCard({required this.cashCents, required this.dueCents});
+
+  final int cashCents;
+  final int dueCents;
+
+  @override
+  Widget build(BuildContext context) {
+    final sufficient = cashCents >= dueCents;
+
+    if (sufficient) {
+      final changeCents = cashCents - dueCents;
+
+      return Container(
+        width: double.infinity,
+        padding: const EdgeInsets.symmetric(vertical: 16),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(16),
+        ),
+        child: Column(
+          children: [
+            const Text(
+              'VUELTO A ENTREGAR',
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w700,
+                letterSpacing: 0.6,
+                color: DriverPalette.brown,
+              ),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'S/ ${formatCentsAsDecimal(changeCents)}',
+              style: const TextStyle(
+                fontSize: 26,
+                fontWeight: FontWeight.w800,
+                color: DriverPalette.greenPrimary,
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    final shortfallCents = dueCents - cashCents;
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(vertical: 16),
+      decoration: BoxDecoration(
+        color: DriverPalette.coral.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Column(
+        children: [
+          const Text(
+            'Monto insuficiente',
+            style: TextStyle(
+              fontSize: 15,
+              fontWeight: FontWeight.w700,
+              color: DriverPalette.coral,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            'Faltan S/ ${formatCentsAsDecimal(shortfallCents)}',
+            style: const TextStyle(color: DriverPalette.coral),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ErrorBanner extends StatelessWidget {
+  const _ErrorBanner({required this.message});
+
+  final String message;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Text(
+        message,
+        textAlign: TextAlign.center,
+        style: const TextStyle(
+          color: DriverPalette.coral,
+          fontWeight: FontWeight.w700,
         ),
       ),
     );

@@ -19,8 +19,10 @@ import 'package:driver/features/driver/data/driver_rides_repository.dart';
 import 'package:driver/features/driver/domain/driver_active_ride.dart';
 import 'package:driver/features/driver/domain/driver_daily_stats.dart';
 import 'package:driver/features/driver/domain/driver_operational_state.dart';
+import 'package:driver/features/driver/domain/driver_pending_payment.dart';
 import 'package:driver/features/driver/domain/driver_pending_proposal.dart';
 import 'package:driver/features/driver/domain/driver_ride_offer.dart';
+import 'package:driver/features/driver/domain/driver_ride_payment.dart';
 import 'package:driver/features/driver/presentation/driver_home_map.dart';
 import 'package:driver/features/driver/presentation/driver_home_screen.dart';
 
@@ -67,6 +69,199 @@ void main() {
       expect(operations.getStatusCalls, 0);
     },
   );
+
+  group('Restore CASH PENDING (Checkpoint D)', () {
+    testWidgets(
+      'restaura /completed-payment/:rideId cuando no hay active ride y existe CASH PENDING',
+      (tester) async {
+        final rides = _FakeRidesRepository(
+          activeRideQueue: [null],
+          pendingPaymentsQueue: [
+            [_pendingPaymentFixture(rideId: 'ride-7', method: 'CASH', status: 'PENDING')],
+          ],
+        );
+        final operations = _FakeOperationsRepository();
+        final offers = _FakeOffersRepository();
+
+        await _pumpHome(
+          tester,
+          rides: rides,
+          operations: operations,
+          offers: offers,
+        );
+        await tester.pump();
+        await tester.pump();
+
+        expect(find.text('COMPLETED_PAYMENT_ROUTE ride-7'), findsOneWidget);
+        expect(operations.getStatusCalls, 0);
+      },
+    );
+
+    testWidgets(
+      'prioridad: active ride IN_PROGRESS gana sobre un CASH PENDING previo',
+      (tester) async {
+        final rides = _FakeRidesRepository(
+          activeRideQueue: [_activeRide(status: 'IN_PROGRESS')],
+          pendingPaymentsQueue: [
+            [_pendingPaymentFixture(rideId: 'ride-old', method: 'CASH', status: 'PENDING')],
+          ],
+        );
+        final operations = _FakeOperationsRepository();
+        final offers = _FakeOffersRepository();
+
+        await _pumpHome(
+          tester,
+          rides: rides,
+          operations: operations,
+          offers: offers,
+        );
+        await tester.pump();
+        await tester.pump();
+
+        expect(find.text('ACTIVE_RIDE_ROUTE'), findsOneWidget);
+        expect(rides.getPendingPaymentsCalls, 0);
+      },
+    );
+
+    testWidgets(
+      'múltiples CASH PENDING: elige el primero de la lista sin descartar los demás',
+      (tester) async {
+        final rides = _FakeRidesRepository(
+          activeRideQueue: [null],
+          pendingPaymentsQueue: [
+            [
+              _pendingPaymentFixture(
+                rideId: 'ride-recent',
+                method: 'CASH',
+                status: 'PENDING',
+              ),
+              _pendingPaymentFixture(
+                rideId: 'ride-old',
+                method: 'CASH',
+                status: 'PENDING',
+              ),
+            ],
+          ],
+        );
+        final operations = _FakeOperationsRepository();
+        final offers = _FakeOffersRepository();
+
+        await _pumpHome(
+          tester,
+          rides: rides,
+          operations: operations,
+          offers: offers,
+        );
+        await tester.pump();
+        await tester.pump();
+
+        expect(
+          find.text('COMPLETED_PAYMENT_ROUTE ride-recent'),
+          findsOneWidget,
+        );
+      },
+    );
+
+    testWidgets(
+      'ignora pendientes no-CASH y elige el CASH real de la lista',
+      (tester) async {
+        final rides = _FakeRidesRepository(
+          activeRideQueue: [null],
+          pendingPaymentsQueue: [
+            [
+              _pendingPaymentFixture(
+                rideId: 'ride-yape',
+                method: 'YAPE',
+                status: 'PENDING',
+              ),
+              _pendingPaymentFixture(
+                rideId: 'ride-cash',
+                method: 'CASH',
+                status: 'PENDING',
+              ),
+            ],
+          ],
+        );
+        final operations = _FakeOperationsRepository();
+        final offers = _FakeOffersRepository();
+
+        await _pumpHome(
+          tester,
+          rides: rides,
+          operations: operations,
+          offers: offers,
+        );
+        await tester.pump();
+        await tester.pump();
+
+        expect(
+          find.text('COMPLETED_PAYMENT_ROUTE ride-cash'),
+          findsOneWidget,
+        );
+      },
+    );
+
+    testWidgets(
+      'sin active ride ni CASH PENDING: Home muestra su flujo normal',
+      (tester) async {
+        final rides = _FakeRidesRepository(
+          activeRideQueue: [null],
+          pendingPaymentsQueue: const [[]],
+        );
+        final operations = _FakeOperationsRepository(
+          statusQueue: [
+            const DriverOperationalState(status: DriverOperationalStatus.offline),
+          ],
+        );
+        final offers = _FakeOffersRepository();
+
+        await _pumpHome(
+          tester,
+          rides: rides,
+          operations: operations,
+          offers: offers,
+        );
+        await tester.pump();
+
+        expect(find.text('Estás desconectado'), findsWidgets);
+        expect(find.text('COMPLETED_PAYMENT_ROUTE'), findsNothing);
+      },
+    );
+
+    testWidgets(
+      'error de red al consultar pending-payments no bloquea Home (fallback seguro)',
+      (tester) async {
+        final rides = _FakeRidesRepository(
+          activeRideQueue: [null],
+          pendingPaymentsQueue: [
+            DioException(
+              requestOptions: RequestOptions(
+                path: 'drivers/me/rides/pending-payments',
+              ),
+              type: DioExceptionType.connectionError,
+            ),
+          ],
+        );
+        final operations = _FakeOperationsRepository(
+          statusQueue: [
+            const DriverOperationalState(status: DriverOperationalStatus.offline),
+          ],
+        );
+        final offers = _FakeOffersRepository();
+
+        await _pumpHome(
+          tester,
+          rides: rides,
+          operations: operations,
+          offers: offers,
+        );
+        await tester.pump();
+
+        expect(find.text('Estás desconectado'), findsWidgets);
+        expect(operations.getStatusCalls, 1);
+      },
+    );
+  });
 
   testWidgets(
     'B: restore OFFLINE muestra Home desconectado y no arranca workers',
@@ -2681,6 +2876,14 @@ Future<void> _pumpHome(
             const Scaffold(body: Text('ACTIVE_RIDE_ROUTE')),
       ),
       GoRoute(
+        path: '/completed-payment/:rideId',
+        builder: (context, state) => Scaffold(
+          body: Text(
+            'COMPLETED_PAYMENT_ROUTE ${state.pathParameters['rideId']}',
+          ),
+        ),
+      ),
+      GoRoute(
         path: '/login',
         builder: (context, state) {
           onLoginBuilt?.call();
@@ -2759,6 +2962,32 @@ DriverActiveRide _activeRide({
   );
 }
 
+DriverPendingPayment _pendingPaymentFixture({
+  required String rideId,
+  String method = 'CASH',
+  String status = 'PENDING',
+}) {
+  return DriverPendingPayment(
+    rideId: rideId,
+    rideStatus: 'COMPLETED',
+    originAddress: 'Origen',
+    destinationAddress: 'Destino',
+    completedAt: DateTime.utc(2026, 8, 10, 12),
+    finalFare: '8.00',
+    currency: 'PEN',
+    payment: DriverRidePayment(
+      id: 'payment-$rideId',
+      rideId: rideId,
+      method: method,
+      status: status,
+      amountDue: '8.00',
+      grossAmount: '8.00',
+      discountAmount: '0.00',
+      currency: 'PEN',
+    ),
+  );
+}
+
 DriverPendingProposal _pendingProposal({required String offerId}) {
   return DriverPendingProposal(
     offerId: offerId,
@@ -2793,7 +3022,7 @@ DriverRideOffer _offer() {
 }
 
 class _FakeRidesRepository extends DriverRidesRepository {
-  _FakeRidesRepository({List<Object?>? activeRideQueue})
+  _FakeRidesRepository({List<Object?>? activeRideQueue, this.pendingPaymentsQueue})
     : _queue = List.of(activeRideQueue ?? const [null]),
       super(Dio());
 
@@ -2803,6 +3032,13 @@ class _FakeRidesRepository extends DriverRidesRepository {
   /// Cuando se define, `getActiveRide` queda pendiente indefinidamente
   /// hasta que el test complete este gate (usado para probar dispose).
   Completer<DriverActiveRide?>? gate;
+
+  /// Cola de resultados para `getPendingPayments`. `null`/vacía se
+  /// comporta como "sin pendientes" (default seguro para todos los
+  /// tests que no auditan Checkpoint D explícitamente): así ningún
+  /// test existente necesita conocer este método nuevo.
+  final List<Object>? pendingPaymentsQueue;
+  int getPendingPaymentsCalls = 0;
 
   @override
   Future<DriverActiveRide?> getActiveRide() async {
@@ -2821,6 +3057,25 @@ class _FakeRidesRepository extends DriverRidesRepository {
     }
 
     return next as DriverActiveRide?;
+  }
+
+  @override
+  Future<List<DriverPendingPayment>> getPendingPayments() async {
+    getPendingPaymentsCalls++;
+
+    final queue = pendingPaymentsQueue;
+
+    if (queue == null || queue.isEmpty) {
+      return const [];
+    }
+
+    final next = queue.length > 1 ? queue.removeAt(0) : queue.first;
+
+    if (next is DioException) {
+      throw next;
+    }
+
+    return next as List<DriverPendingPayment>;
   }
 }
 

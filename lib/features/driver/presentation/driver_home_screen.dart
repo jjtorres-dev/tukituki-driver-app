@@ -15,6 +15,7 @@ import '../data/driver_operations_repository.dart';
 import '../data/driver_rides_repository.dart';
 import '../domain/driver_daily_stats.dart';
 import '../domain/driver_operational_state.dart';
+import '../domain/driver_pending_payment.dart';
 import '../domain/driver_pending_proposal.dart';
 import '../domain/driver_ride_offer.dart';
 import 'driver_counter_offer_dialog.dart';
@@ -240,6 +241,40 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
         _goToActiveRide();
 
         return;
+      }
+
+      /*
+       * Sin active ride: un COMPLETED con cobro efectivo pendiente
+       * tiene prioridad sobre el Home normal (Checkpoint D). Un
+       * error de red aquí NUNCA bloquea Home: se registra y el
+       * restore sigue su flujo normal (operational status), igual
+       * que si no hubiera ningún pendiente.
+       */
+      try {
+        final pendingPayments = await ridesRepository.getPendingPayments();
+
+        if (!mounted) {
+          return;
+        }
+
+        final cashPending = selectMostRecentCashPendingPayment(
+          pendingPayments,
+        );
+
+        debugPrint(
+          'DRIVER RESTORE - pending payments '
+          'cantidad=${pendingPayments.length} '
+          'cash=${cashPending != null}',
+        );
+
+        if (cashPending != null) {
+          redirected = true;
+          _goToCompletedPayment(cashPending.rideId);
+
+          return;
+        }
+      } catch (error) {
+        debugPrint('DRIVER RESTORE - pending payments error: $error');
       }
 
       // Las stats no bloquean la recuperación crítica: se cargan
@@ -1608,6 +1643,21 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
     _stopOnlineWorkers();
 
     context.go('/active-ride');
+  }
+
+  /// Restore server-side de un COMPLETED con cobro efectivo pendiente
+  /// (Checkpoint D). Nunca cambia availability: Backend ya dejó al
+  /// conductor AVAILABLE al completar el viaje, esto es solo UX.
+  void _goToCompletedPayment(String rideId) {
+    if (!mounted || _counterDialogOpen || _navigatingToRide) {
+      return;
+    }
+
+    _navigatingToRide = true;
+
+    _stopOnlineWorkers();
+
+    context.go('/completed-payment/$rideId');
   }
 
   void _showMessage(String message) {

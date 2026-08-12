@@ -16,6 +16,7 @@ import '../domain/driver_active_ride.dart';
 import '../domain/driver_assigned_passenger.dart';
 import '../domain/driver_ride_completion.dart';
 import 'driver_home_map.dart';
+import 'driver_ride_completion_view.dart';
 
 class _DriverLocationFailure implements Exception {
   const _DriverLocationFailure(this.message);
@@ -967,89 +968,19 @@ class _DriverActiveRideScreenState
   }
 
   Widget _buildCompletionScreen(DriverRideCompletion completion) {
-    return Scaffold(
-      appBar: AppBar(
-        automaticallyImplyLeading: false,
-        title: const Text('Viaje completado'),
-      ),
-      body: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              const Icon(Icons.check_circle, size: 100),
+    final passenger = _ride?.passenger;
 
-              const SizedBox(height: 24),
-
-              const Text(
-                '¡Viaje completado!',
-                textAlign: TextAlign.center,
-                style: TextStyle(fontSize: 30, fontWeight: FontWeight.bold),
-              ),
-
-              const SizedBox(height: 20),
-
-              Text(
-                'Tarifa final',
-                textAlign: TextAlign.center,
-                style: Theme.of(context).textTheme.titleLarge,
-              ),
-
-              const SizedBox(height: 8),
-
-              Text(
-                'S/ ${completion.passengerAmountDue}',
-                textAlign: TextAlign.center,
-                style: const TextStyle(
-                  fontSize: 42,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-
-              const SizedBox(height: 24),
-
-              Card(
-                child: Padding(
-                  padding: const EdgeInsets.all(20),
-                  child: Column(
-                    children: [
-                      Text(
-                        'Método de pago: '
-                        '${completion.paymentMethod}',
-                      ),
-
-                      const SizedBox(height: 8),
-
-                      Text(
-                        'Estado del pago: '
-                        '${completion.paymentStatus}',
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-
-              const SizedBox(height: 24),
-
-              FilledButton.icon(
-                onPressed: () {
-                  context.go(
-                    '/cash-payment/'
-                    '${completion.rideId}',
-                  );
-                },
-                icon: const Icon(Icons.payments),
-                label: const Padding(
-                  padding: EdgeInsets.symmetric(vertical: 16),
-                  child: Text('Cobrar efectivo'),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
+    return DriverRideCompletionView(
+      passengerFirstName: passenger?.firstName,
+      passengerPhotoUrl: passenger?.photoUrl,
+      finalFare: completion.finalFare,
+      actualDistanceMeters: completion.actualDistanceMeters,
+      actualDurationSeconds: completion.actualDurationSeconds,
+      paymentMethod: completion.paymentMethod,
+      paymentStatus: completion.paymentStatus,
+      onCollectCash: () {
+        context.go('/cash-payment/${completion.rideId}');
+      },
     );
   }
 

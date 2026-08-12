@@ -4,6 +4,7 @@ import '../../features/auth/presentation/driver_splash_screen.dart';
 import '../../features/auth/presentation/login_screen.dart';
 import '../../features/driver/presentation/driver_active_ride_screen.dart';
 import '../../features/driver/presentation/driver_cash_payment_screen.dart';
+import '../../features/driver/presentation/driver_completed_payment_screen.dart';
 import '../../features/driver/presentation/driver_home_screen.dart';
 
 final appRouter = GoRouter(
@@ -38,6 +39,14 @@ final appRouter = GoRouter(
         return DriverCashPaymentScreen(
           rideId: rideId,
         );
+      },
+    ),
+    GoRoute(
+      path: '/completed-payment/:rideId',
+      builder: (context, state) {
+        final rideId = state.pathParameters['rideId']!;
+
+        return DriverCompletedPaymentScreen(rideId: rideId);
       },
     ),
   ],

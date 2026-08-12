@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:go_router/go_router.dart';
 
 import 'package:driver/features/driver/data/driver_operations_repository.dart';
 import 'package:driver/features/driver/data/driver_rides_repository.dart';
@@ -1368,6 +1369,186 @@ void main() {
     });
   });
 
+  group('COMPLETED', () {
+    Future<void> pumpCompletion(
+      WidgetTester tester, {
+      required DriverRideCompletion completion,
+    }) async {
+      final ride = _rideFixture(status: 'IN_PROGRESS');
+      final rides = _FakeRidesRepository(activeRideQueue: [ride])
+        ..completeRideQueue = [completion];
+
+      await _pumpActiveRide(tester, rides: rides);
+      await tester.pump();
+
+      await tester.ensureVisible(
+        find.text('Llegué al destino y finalizar viaje'),
+      );
+      await tester.tap(find.text('Llegué al destino y finalizar viaje'));
+      await tester.pump();
+      await tester.tap(find.text('Sí, finalizar viaje'));
+      await tester.pump();
+      await tester.pump();
+    }
+
+    testWidgets('A: renderiza "¡Viaje completado!"', (tester) async {
+      await pumpCompletion(tester, completion: _completionFixture());
+
+      expect(find.text('¡Viaje completado!'), findsOneWidget);
+    });
+
+    testWidgets('B: muestra firstName real del Passenger', (tester) async {
+      await pumpCompletion(tester, completion: _completionFixture());
+
+      expect(find.text('María'), findsOneWidget);
+    });
+
+    testWidgets('C: TARIFA FINAL usa finalFare real (no passengerAmountDue)', (
+      tester,
+    ) async {
+      await pumpCompletion(
+        tester,
+        completion: _completionFixture(
+          finalFare: '12.30',
+          passengerAmountDue: '99.99',
+        ),
+      );
+
+      expect(find.text('TARIFA FINAL'), findsOneWidget);
+      expect(find.text('S/ 12.30'), findsOneWidget);
+      expect(find.text('S/ 99.99'), findsNothing);
+    });
+
+    testWidgets('D: CASH visible como "Efectivo"', (tester) async {
+      await pumpCompletion(
+        tester,
+        completion: _completionFixture(paymentMethod: 'CASH'),
+      );
+
+      expect(find.text('Efectivo'), findsOneWidget);
+    });
+
+    testWidgets('E: PENDING visible como "Pendiente"', (tester) async {
+      await pumpCompletion(
+        tester,
+        completion: _completionFixture(paymentStatus: 'PENDING'),
+      );
+
+      expect(find.text('Pendiente'), findsOneWidget);
+    });
+
+    testWidgets('F: actualDistanceMeters > 0 visible', (tester) async {
+      await pumpCompletion(
+        tester,
+        completion: _completionFixture(actualDistanceMeters: 850),
+      );
+
+      expect(find.textContaining('850 m'), findsOneWidget);
+    });
+
+    testWidgets('G: actualDistanceMeters == 0 se omite (nunca "0.0 km")', (
+      tester,
+    ) async {
+      await pumpCompletion(
+        tester,
+        completion: _completionFixture(
+          actualDistanceMeters: 0,
+          actualDurationSeconds: 0,
+        ),
+      );
+
+      expect(find.textContaining(' m'), findsNothing);
+      expect(find.textContaining('km'), findsNothing);
+    });
+
+    testWidgets('H: actualDurationSeconds visible', (tester) async {
+      await pumpCompletion(
+        tester,
+        completion: _completionFixture(actualDurationSeconds: 300),
+      );
+
+      expect(find.textContaining('5 min'), findsOneWidget);
+    });
+
+    testWidgets('I: CTA Cobrar efectivo visible solo con CASH+PENDING', (
+      tester,
+    ) async {
+      await pumpCompletion(
+        tester,
+        completion: _completionFixture(
+          paymentMethod: 'CASH',
+          paymentStatus: 'PENDING',
+        ),
+      );
+
+      expect(find.text('Cobrar efectivo'), findsOneWidget);
+    });
+
+    testWidgets('J: NO muestra CTA si method != CASH', (tester) async {
+      await pumpCompletion(
+        tester,
+        completion: _completionFixture(
+          paymentMethod: 'YAPE',
+          paymentStatus: 'PENDING',
+        ),
+      );
+
+      expect(find.text('Cobrar efectivo'), findsNothing);
+    });
+
+    testWidgets('CTA navega a /cash-payment/:rideId', (tester) async {
+      final ride = _rideFixture(status: 'IN_PROGRESS');
+      final rides = _FakeRidesRepository(activeRideQueue: [ride])
+        ..completeRideQueue = [_completionFixture(rideId: 'ride-77')];
+
+      final router = GoRouter(
+        initialLocation: '/active-ride',
+        routes: [
+          GoRoute(
+            path: '/active-ride',
+            builder: (context, state) => const DriverActiveRideScreen(),
+          ),
+          GoRoute(
+            path: '/cash-payment/:rideId',
+            builder: (context, state) => Scaffold(
+              body: Text('CASH_PAYMENT_ROUTE ${state.pathParameters['rideId']}'),
+            ),
+          ),
+        ],
+      );
+      addTearDown(router.dispose);
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            driverRidesRepositoryProvider.overrideWithValue(rides),
+            driverOperationsRepositoryProvider.overrideWithValue(
+              _FakeOperationsRepository(),
+            ),
+          ],
+          child: MaterialApp.router(routerConfig: router),
+        ),
+      );
+
+      await tester.pump();
+
+      await tester.ensureVisible(
+        find.text('Llegué al destino y finalizar viaje'),
+      );
+      await tester.tap(find.text('Llegué al destino y finalizar viaje'));
+      await tester.pump();
+      await tester.tap(find.text('Sí, finalizar viaje'));
+      await tester.pump();
+      await tester.pump();
+
+      await tester.ensureVisible(find.text('Cobrar efectivo'));
+      await tester.tap(find.text('Cobrar efectivo'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('CASH_PAYMENT_ROUTE ride-77'), findsOneWidget);
+    });
+  });
+
   group('Mapa — markers reales', () {
     testWidgets(
       'pickup y destino se agregan como markers cuando hay coordenadas',
@@ -1694,21 +1875,29 @@ Future<void> _pumpInProgressStressScenario(WidgetTester tester) async {
   expect(tester.takeException(), isNull);
 }
 
-DriverRideCompletion _completionFixture({String rideId = 'ride-1'}) {
+DriverRideCompletion _completionFixture({
+  String rideId = 'ride-1',
+  String finalFare = '8.00',
+  String passengerAmountDue = '8.00',
+  num actualDistanceMeters = 3200,
+  num actualDurationSeconds = 780,
+  String paymentMethod = 'CASH',
+  String paymentStatus = 'PENDING',
+}) {
   return DriverRideCompletion(
     rideId: rideId,
     status: 'COMPLETED',
     completedAt: DateTime.utc(2026, 8, 10, 12),
-    actualDistanceMeters: 3200,
-    actualDurationSeconds: 780,
+    actualDistanceMeters: actualDistanceMeters,
+    actualDurationSeconds: actualDurationSeconds,
     estimatedFare: '8.00',
-    finalFare: '8.00',
+    finalFare: finalFare,
     discountAmount: '0.00',
-    passengerAmountDue: '8.00',
+    passengerAmountDue: passengerAmountDue,
     currency: 'PEN',
     fareWasCapped: false,
-    paymentMethod: 'CASH',
-    paymentStatus: 'PENDING',
+    paymentMethod: paymentMethod,
+    paymentStatus: paymentStatus,
   );
 }
 
