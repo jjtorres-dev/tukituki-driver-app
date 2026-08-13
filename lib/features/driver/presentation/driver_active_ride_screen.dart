@@ -15,6 +15,7 @@ import '../data/driver_rides_repository.dart';
 import '../domain/driver_active_ride.dart';
 import '../domain/driver_assigned_passenger.dart';
 import '../domain/driver_ride_completion.dart';
+import '../domain/driver_ride_waiting.dart';
 import 'driver_cancel_ride_flow.dart';
 import 'driver_home_map.dart';
 import 'driver_post_ride_presence.dart';
@@ -45,8 +46,8 @@ class DriverActiveRideScreen extends ConsumerStatefulWidget {
       _DriverActiveRideScreenState();
 }
 
-class _DriverActiveRideScreenState
-    extends ConsumerState<DriverActiveRideScreen> {
+class _DriverActiveRideScreenState extends ConsumerState<DriverActiveRideScreen>
+    with WidgetsBindingObserver {
   final _codeController = TextEditingController();
   final _codeFocusNode = FocusNode();
 
@@ -113,6 +114,44 @@ class _DriverActiveRideScreenState
   DriverMapCameraRequest? _cameraRequest;
   int _cameraRequestSequence = 0;
 
+  // ---------------------------------------------------------------------
+  // RideWaiting / Passenger No-show — Checkpoint G2
+  // ---------------------------------------------------------------------
+
+  /// Último estado real de `RideWaiting` conocido. `null` cuando no
+  /// hay una espera activa (todavía no se inició, o Backend confirmó
+  /// que ya no existe).
+  DriverRideWaiting? _waiting;
+
+  /// Momento (reloj del dispositivo) en que `_waiting` se sincronizó
+  /// por última vez con Backend. Solo se usa para animar el contador
+  /// visualmente entre polls — nunca como fuente de autorización.
+  DateTime? _waitingSyncedAt;
+
+  /// Evita reintentar el restore de waiting en cada poll de 3s del
+  /// Ride una vez que ya se resolvió para este `rideId` (éxito o "no
+  /// existe"). Un error real de red/servidor NO marca este campo, así
+  /// el siguiente poll vuelve a intentarlo.
+  String? _waitingRestoreDoneForRideId;
+
+  Timer? _waitingPollTimer;
+
+  /// Solo dispara `setState` cada segundo para recalcular el contador
+  /// visual a partir del reloj — nunca cambia `_waiting` por sí mismo.
+  Timer? _waitingTickTimer;
+
+  bool _startingWaiting = false;
+  bool _reportingNoShow = false;
+
+  String? _waitingStartError;
+  String? _noShowError;
+
+  @visibleForTesting
+  DriverRideWaiting? get debugWaiting => _waiting;
+
+  @visibleForTesting
+  bool get debugWaitingPolling => _waitingPollTimer != null;
+
   @visibleForTesting
   Position? get debugDriverPosition => _driverPosition;
 
@@ -129,6 +168,8 @@ class _DriverActiveRideScreenState
   void initState() {
     super.initState();
 
+    WidgetsBinding.instance.addObserver(this);
+
     _codeController.addListener(_handleCodeChanged);
 
     unawaited(_loadRide());
@@ -144,15 +185,38 @@ class _DriverActiveRideScreenState
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+
     _rideTimer?.cancel();
     _activityTimer?.cancel();
     _postRidePresence?.dispose();
+    _stopWaitingWorkers();
 
     _codeController.removeListener(_handleCodeChanged);
     _codeController.dispose();
     _codeFocusNode.dispose();
 
     super.dispose();
+  }
+
+  /// Al volver de background con el Ride todavía en DRIVER_ARRIVED, se
+  /// resincroniza la espera de inmediato en vez de esperar al próximo
+  /// tick del poll de 3s (Fase 17). Si el Ride ya cambió de estado, no
+  /// hay nada que resincronizar aquí: el poll normal del Ride ya se
+  /// encarga de reflejar el estado real.
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state != AppLifecycleState.resumed) {
+      return;
+    }
+
+    final ride = _ride;
+
+    if (ride != null && ride.status == 'DRIVER_ARRIVED') {
+      debugPrint('DRIVER ACTIVE APP RESUMED - resincronizando waiting');
+
+      unawaited(_syncWaiting());
+    }
   }
 
   /// El mensaje de error del PIN permanece visible hasta que el
@@ -340,6 +404,7 @@ class _DriverActiveRideScreenState
       });
 
       _maybeFrameCamera();
+      _handleRideStatusForWaiting(ride);
     } on DioException catch (error) {
       debugPrint(
         'DRIVER ACTIVE LOAD ERROR '
@@ -575,6 +640,8 @@ class _DriverActiveRideScreenState
       setState(() {
         _ride = updatedRide;
       });
+
+      _handleRideStatusForWaiting(updatedRide);
     } on _DriverLocationFailure catch (error) {
       if (!mounted) {
         return;
@@ -677,13 +744,21 @@ class _DriverActiveRideScreenState
       setState(() {
         _ride = updatedRide;
       });
+
+      // PIN válido durante una espera activa (Fase 15): el Ride pasa
+      // a IN_PROGRESS y el no-show deja de tener sentido de inmediato,
+      // sin esperar al próximo poll.
+      _handleRideStatusForWaiting(updatedRide);
     } on _DriverLocationFailure catch (error) {
       if (!mounted) {
         return;
       }
 
       setState(() {
-        _pinError = _PinSubmitError(_PinErrorKind.location, message: error.message);
+        _pinError = _PinSubmitError(
+          _PinErrorKind.location,
+          message: error.message,
+        );
       });
     } on DioException catch (error) {
       if (!mounted) {
@@ -826,6 +901,8 @@ class _DriverActiveRideScreenState
         return;
       }
 
+      _stopWaitingWorkers();
+
       // Backend ya liberó al Driver (AVAILABLE + Redis GEO si
       // corresponde): esta pantalla no debe llamar goOnline/goOffline
       // ni actualizar estado manualmente. Home reconsulta Backend
@@ -854,7 +931,9 @@ class _DriverActiveRideScreenState
         }
 
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Otro proceso ya actualizó este viaje.')),
+          const SnackBar(
+            content: Text('Otro proceso ya actualizó este viaje.'),
+          ),
         );
 
         _resumeTimersAfterFailedCancel();
@@ -870,7 +949,9 @@ class _DriverActiveRideScreenState
 
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('Ya no puedes cancelar este viaje en su estado actual.'),
+            content: Text(
+              'Ya no puedes cancelar este viaje en su estado actual.',
+            ),
           ),
         );
 
@@ -920,6 +1001,369 @@ class _DriverActiveRideScreenState
     }
   }
 
+  // ---------------------------------------------------------------------
+  // RideWaiting / Passenger No-show — Checkpoint G2
+  //
+  // Solo tiene sentido en DRIVER_ARRIVED. Backend es la única
+  // autoridad de tiempo (`remainingWaitingSeconds`/`canReportNoShow`):
+  // esta pantalla nunca decide por sí sola que el no-show ya está
+  // disponible, solo refleja lo último que Backend confirmó.
+  // ---------------------------------------------------------------------
+
+  /// Punto de entrada único tras cualquier cambio real de `_ride`
+  /// (carga inicial, poll de 3s, o una transición directa como
+  /// arrive/start). Fuera de DRIVER_ARRIVED apaga los workers de
+  /// espera de inmediato; dentro de DRIVER_ARRIVED restaura el estado
+  /// real una sola vez por rideId (salvo que el restore haya fallado
+  /// por un error real, en cuyo caso se reintenta en el próximo poll).
+  void _handleRideStatusForWaiting(DriverActiveRide ride) {
+    if (ride.status != 'DRIVER_ARRIVED') {
+      final hadWaiting = _waiting != null;
+
+      _stopWaitingWorkers();
+      _waitingRestoreDoneForRideId = null;
+
+      if (hadWaiting && mounted) {
+        setState(() {
+          _waiting = null;
+        });
+      }
+
+      return;
+    }
+
+    if (_waitingRestoreDoneForRideId == ride.id) {
+      return;
+    }
+
+    unawaited(_syncWaiting());
+  }
+
+  /// Consulta el estado real de la espera y resincroniza `_waiting`.
+  /// Sirve tanto para el restore inicial como para cada tick del poll
+  /// y para la resincronización al volver de background. Un error de
+  /// red/servidor nunca se interpreta como "no existe espera": se
+  /// conserva el último `_waiting` conocido y se reintenta después.
+  Future<void> _syncWaiting() async {
+    final ride = _ride;
+
+    if (ride == null || ride.status != 'DRIVER_ARRIVED') {
+      return;
+    }
+
+    try {
+      final waiting = await ref
+          .read(driverRidesRepositoryProvider)
+          .getRideWaiting(ride.id);
+
+      if (!mounted) {
+        return;
+      }
+
+      _waitingRestoreDoneForRideId = ride.id;
+
+      setState(() {
+        _waiting = waiting;
+        _waitingSyncedAt = waiting == null ? null : DateTime.now();
+      });
+
+      if (waiting == null) {
+        _stopWaitingWorkers();
+      } else if (_waitingPollTimer == null) {
+        _startWaitingWorkers();
+      }
+    } on DioException catch (error) {
+      debugPrint(
+        'DRIVER WAITING SYNC ERROR '
+        'status=${error.response?.statusCode} '
+        'data=${error.response?.data}',
+      );
+    } catch (error) {
+      debugPrint('DRIVER WAITING SYNC ERROR: $error');
+    }
+  }
+
+  void _startWaitingWorkers() {
+    _waitingPollTimer?.cancel();
+    _waitingTickTimer?.cancel();
+
+    _waitingPollTimer = Timer.periodic(const Duration(seconds: 3), (_) {
+      unawaited(_syncWaiting());
+    });
+
+    // Únicamente redibuja para que el contador visual avance segundo
+    // a segundo entre polls; jamás toca `_waiting`.
+    _waitingTickTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (mounted) {
+        setState(() {});
+      }
+    });
+  }
+
+  void _stopWaitingWorkers() {
+    _waitingPollTimer?.cancel();
+    _waitingPollTimer = null;
+
+    _waitingTickTimer?.cancel();
+    _waitingTickTimer = null;
+  }
+
+  /// Segundos restantes para mostrar en el contador grande, animados
+  /// localmente entre polls a partir del reloj del dispositivo. Nunca
+  /// es la fuente de autorización: solo UX, `canReportNoShow` siempre
+  /// se lee directo de `_waiting`.
+  int get _waitingDisplaySeconds {
+    final waiting = _waiting;
+
+    if (waiting == null) {
+      return 0;
+    }
+
+    final syncedAt = _waitingSyncedAt;
+
+    if (syncedAt == null) {
+      return waiting.remainingSecondsForDisplay;
+    }
+
+    final elapsedSinceSync = DateTime.now().difference(syncedAt).inSeconds;
+    final remaining = waiting.remainingSecondsForDisplay - elapsedSinceSync;
+
+    return remaining < 0 ? 0 : remaining;
+  }
+
+  Future<void> _startWaiting() async {
+    final ride = _ride;
+
+    if (ride == null || _startingWaiting || _changingStatus || _cancelling) {
+      return;
+    }
+
+    setState(() {
+      _startingWaiting = true;
+      _waitingStartError = null;
+    });
+
+    try {
+      final operationsRepository = ref.read(driverOperationsRepositoryProvider);
+
+      await operationsRepository.heartbeat();
+
+      await _publishCurrentLocation(requestPermission: true);
+
+      final waiting = await ref
+          .read(driverRidesRepositoryProvider)
+          .startRideWaiting(ride.id);
+
+      if (!mounted) {
+        return;
+      }
+
+      _waitingRestoreDoneForRideId = ride.id;
+
+      setState(() {
+        _waiting = waiting;
+        _waitingSyncedAt = DateTime.now();
+      });
+
+      _startWaitingWorkers();
+    } on _DriverLocationFailure catch (error) {
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _waitingStartError = error.message;
+      });
+    } on DioException catch (error) {
+      debugPrint(
+        'DRIVER START WAITING ERROR '
+        'status=${error.response?.statusCode} '
+        'data=${error.response?.data}',
+      );
+
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _waitingStartError = error.response == null
+            ? 'No se pudo conectar con TukiTuki.'
+            : 'No se pudo iniciar el tiempo de espera. Inténtalo nuevamente.';
+      });
+    } finally {
+      if (mounted) {
+        setState(() {
+          _startingWaiting = false;
+        });
+      }
+    }
+  }
+
+  /// UI local previa al POST real: no cambia ningún status, solo
+  /// pregunta. Backend nunca se llama hasta que el Driver confirme
+  /// explícitamente "Sí, confirmar".
+  Future<void> _confirmAndReportNoShow() async {
+    final waiting = _waiting;
+
+    if (_ride == null ||
+        waiting == null ||
+        !waiting.canReportNoShow ||
+        _reportingNoShow) {
+      return;
+    }
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text('¿Confirmar que el pasajero no se presentó?'),
+          content: const Text(
+            'Confirma únicamente si esperaste en el punto '
+            'de recojo y el pasajero no llegó.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(false),
+              child: const Text('Volver'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(dialogContext).pop(true),
+              child: const Text('Sí, confirmar'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (confirmed != true || !mounted) {
+      return;
+    }
+
+    await _reportNoShow();
+  }
+
+  Future<void> _reportNoShow() async {
+    final ride = _ride;
+
+    if (ride == null || _waiting == null || _reportingNoShow) {
+      return;
+    }
+
+    setState(() {
+      _reportingNoShow = true;
+      _noShowError = null;
+    });
+
+    // Mismo criterio que `_cancelRide`/`_completeRide`: se detienen
+    // primero los timers de polling/GPS para que ninguno pise el
+    // resultado real del no-show mientras el POST está en vuelo.
+    _rideTimer?.cancel();
+    _rideTimer = null;
+    _activityTimer?.cancel();
+    _activityTimer = null;
+    _stopWaitingWorkers();
+
+    try {
+      await _waitForActivityToFinish();
+
+      final operationsRepository = ref.read(driverOperationsRepositoryProvider);
+
+      await operationsRepository.heartbeat();
+
+      await _publishCurrentLocation(requestPermission: true);
+
+      await ref
+          .read(driverRidesRepositoryProvider)
+          .reportPassengerNoShow(ride.id);
+
+      if (!mounted) {
+        return;
+      }
+
+      // Backend ya liberó al Driver y canceló el Ride: esta pantalla
+      // no decide disponibilidad ni estado del Ride manualmente.
+      context.go('/home');
+    } on _DriverLocationFailure catch (error) {
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _noShowError = error.message;
+      });
+
+      _resumeTimersAfterFailedCancel();
+      _startWaitingWorkers();
+    } on DioException catch (error) {
+      debugPrint(
+        'DRIVER NO-SHOW ERROR '
+        'status=${error.response?.statusCode} '
+        'data=${error.response?.data}',
+      );
+
+      if (!mounted) {
+        return;
+      }
+
+      final statusCode = error.response?.statusCode;
+
+      if (statusCode == 409) {
+        // Early no-show: Backend todavía no habilita el reporte.
+        // Nunca asumimos que el contador local tenía razón —
+        // resincronizamos con el estado real.
+        final data = error.response?.data;
+        final message = data is Map ? data['message']?.toString() : null;
+
+        setState(() {
+          _noShowError =
+              message ?? 'Aún debes esperar antes de reportar al pasajero.';
+        });
+
+        unawaited(_syncWaiting());
+      } else if (statusCode == 400) {
+        // Precondición inválida (p.ej. el Ride ya no es
+        // DRIVER_ARRIVED): reconciliamos con el estado real en vez de
+        // fingir éxito.
+        setState(() {
+          _noShowError =
+              'Ya no puedes reportar este viaje en su estado actual.';
+        });
+
+        unawaited(_loadRide(showLoading: false));
+      } else {
+        setState(() {
+          _noShowError = 'No se pudo confirmar. Inténtalo nuevamente.';
+        });
+      }
+
+      _resumeTimersAfterFailedCancel();
+
+      if (_waiting != null) {
+        _startWaitingWorkers();
+      }
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _noShowError = 'No se pudo confirmar. Inténtalo nuevamente.';
+      });
+
+      _resumeTimersAfterFailedCancel();
+
+      if (_waiting != null) {
+        _startWaitingWorkers();
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _reportingNoShow = false;
+        });
+      }
+    }
+  }
+
   /// UI local previa al POST real: no cambia ningún status, solo
   /// pregunta. Backend nunca se llama hasta que el Driver confirme
   /// explícitamente "Sí, finalizar viaje".
@@ -933,9 +1377,7 @@ class _DriverActiveRideScreenState
       builder: (dialogContext) {
         return AlertDialog(
           title: const Text('¿Finalizar el viaje?'),
-          content: const Text(
-            'Confirma que llegaste al destino del pasajero.',
-          ),
+          content: const Text('Confirma que llegaste al destino del pasajero.'),
           actions: [
             TextButton(
               onPressed: () => Navigator.of(dialogContext).pop(false),
@@ -1004,6 +1446,7 @@ class _DriverActiveRideScreenState
 
       _rideTimer?.cancel();
       _activityTimer?.cancel();
+      _stopWaitingWorkers();
 
       setState(() {
         _completion = completion;
@@ -1335,15 +1778,13 @@ class _DriverActiveRideScreenState
                                         : Icons.two_wheeler,
                                   ),
                             label: Padding(
-                              padding: const EdgeInsets.symmetric(
-                                vertical: 16,
-                              ),
+                              padding: const EdgeInsets.symmetric(vertical: 16),
                               child: Text(
                                 _changingStatus
                                     ? 'Actualizando...'
                                     : isArriving
-                                        ? 'Llegué al punto de recojo'
-                                        : 'Ir a recoger al pasajero',
+                                    ? 'Llegué al punto de recojo'
+                                    : 'Ir a recoger al pasajero',
                               ),
                             ),
                           ),
@@ -1494,6 +1935,19 @@ class _DriverActiveRideScreenState
                             },
                           ),
 
+                          const SizedBox(height: 18),
+
+                          _WaitingSection(
+                            waiting: _waiting,
+                            displaySeconds: _waitingDisplaySeconds,
+                            starting: _startingWaiting,
+                            reporting: _reportingNoShow,
+                            startError: _waitingStartError,
+                            noShowError: _noShowError,
+                            onStart: _startWaiting,
+                            onReportNoShow: _confirmAndReportNoShow,
+                          ),
+
                           _CancelRideButton(
                             enabled: !_changingStatus && !_cancelling,
                             cancelling: _cancelling,
@@ -1625,9 +2079,7 @@ class _DriverActiveRideScreenState
                                   )
                                 : const Icon(Icons.flag),
                             label: Padding(
-                              padding: const EdgeInsets.symmetric(
-                                vertical: 16,
-                              ),
+                              padding: const EdgeInsets.symmetric(vertical: 16),
                               child: Text(
                                 _changingStatus
                                     ? 'Finalizando...'
@@ -2018,6 +2470,239 @@ class _CancelRideButton extends StatelessWidget {
 }
 
 // ---------------------------------------------------------------------
+// RideWaiting / Passenger No-show — widgets de Checkpoint G2
+// ---------------------------------------------------------------------
+
+/// `MM:SS` a partir de segundos totales, nunca negativo.
+String _formatWaitingCountdown(int totalSeconds) {
+  final clamped = totalSeconds < 0 ? 0 : totalSeconds;
+  final minutes = clamped ~/ 60;
+  final seconds = clamped % 60;
+
+  return '${minutes.toString().padLeft(2, '0')}:'
+      '${seconds.toString().padLeft(2, '0')}';
+}
+
+/// Dispatcher según exista o no una espera activa. Vive dentro del
+/// mismo sheet scrollable de DRIVER_ARRIVED, debajo del área del PIN:
+/// nunca es una pantalla independiente.
+class _WaitingSection extends StatelessWidget {
+  const _WaitingSection({
+    required this.waiting,
+    required this.displaySeconds,
+    required this.starting,
+    required this.reporting,
+    required this.startError,
+    required this.noShowError,
+    required this.onStart,
+    required this.onReportNoShow,
+  });
+
+  final DriverRideWaiting? waiting;
+  final int displaySeconds;
+  final bool starting;
+  final bool reporting;
+  final String? startError;
+  final String? noShowError;
+  final VoidCallback onStart;
+  final VoidCallback onReportNoShow;
+
+  @override
+  Widget build(BuildContext context) {
+    final currentWaiting = waiting;
+
+    if (currentWaiting == null) {
+      return Padding(
+        padding: const EdgeInsets.only(bottom: 14),
+        child: _WaitingNotStartedCard(
+          starting: starting,
+          errorMessage: startError,
+          onStart: onStart,
+        ),
+      );
+    }
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 14),
+      child: _WaitingActiveCard(
+        displaySeconds: displaySeconds,
+        canReportNoShow: currentWaiting.canReportNoShow,
+        reporting: reporting,
+        errorMessage: noShowError,
+        onReportNoShow: onReportNoShow,
+      ),
+    );
+  }
+}
+
+/// Estado A (Fase 5): espera todavía no iniciada. Discreta a
+/// propósito: no compite con el CTA principal "Iniciar viaje". Sin
+/// contador ni monto — ninguno de los dos existe todavía en este
+/// estado.
+class _WaitingNotStartedCard extends StatelessWidget {
+  const _WaitingNotStartedCard({
+    required this.starting,
+    required this.errorMessage,
+    required this.onStart,
+  });
+
+  final bool starting;
+  final String? errorMessage;
+  final VoidCallback onStart;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const Text(
+            '¿El pasajero aún no aparece?',
+            style: TextStyle(
+              fontWeight: FontWeight.w700,
+              color: DriverPalette.greenPrimary,
+            ),
+          ),
+          const SizedBox(height: 4),
+          const Text(
+            'Inicia el tiempo de espera antes de reportarlo.',
+            style: TextStyle(color: DriverPalette.brown, fontSize: 13),
+          ),
+          if (errorMessage != null) ...[
+            const SizedBox(height: 8),
+            Text(
+              errorMessage!,
+              style: const TextStyle(color: DriverPalette.coral, fontSize: 12),
+            ),
+          ],
+          const SizedBox(height: 12),
+          OutlinedButton.icon(
+            onPressed: starting ? null : onStart,
+            icon: starting
+                ? const SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.hourglass_top, size: 18),
+            label: Text(
+              starting ? 'Iniciando espera...' : 'Iniciar tiempo de espera',
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Estado B/C (Fase 7-9): espera activa. `canReportNoShow` es la
+/// única fuente de autorización del CTA — el contador (`displaySeconds`)
+/// es puramente visual y jamás lo habilita por sí solo.
+class _WaitingActiveCard extends StatelessWidget {
+  const _WaitingActiveCard({
+    required this.displaySeconds,
+    required this.canReportNoShow,
+    required this.reporting,
+    required this.errorMessage,
+    required this.onReportNoShow,
+  });
+
+  final int displaySeconds;
+  final bool canReportNoShow;
+  final bool reporting;
+  final String? errorMessage;
+  final VoidCallback onReportNoShow;
+
+  @override
+  Widget build(BuildContext context) {
+    final countdown = _formatWaitingCountdown(displaySeconds);
+    final canTap = canReportNoShow && !reporting;
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const Text(
+            'Esperando al pasajero',
+            style: TextStyle(
+              fontWeight: FontWeight.w700,
+              color: DriverPalette.greenPrimary,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Center(
+            child: Text(
+              countdown,
+              style: const TextStyle(
+                fontSize: 32,
+                fontWeight: FontWeight.w800,
+                color: DriverPalette.orangeDeep,
+              ),
+            ),
+          ),
+          const SizedBox(height: 6),
+          const Text(
+            'Podrás reportar que el pasajero no se presentó '
+            'cuando termine el tiempo de espera.',
+            style: TextStyle(color: DriverPalette.brown, fontSize: 12),
+          ),
+          if (errorMessage != null) ...[
+            const SizedBox(height: 8),
+            Text(
+              errorMessage!,
+              textAlign: TextAlign.center,
+              style: const TextStyle(color: DriverPalette.coral, fontSize: 12),
+            ),
+          ],
+          const SizedBox(height: 12),
+          OutlinedButton.icon(
+            onPressed: canTap ? onReportNoShow : null,
+            style: OutlinedButton.styleFrom(
+              foregroundColor: DriverPalette.coral,
+              side: const BorderSide(color: DriverPalette.coral),
+            ),
+            icon: reporting
+                ? const SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.person_off, size: 18),
+            label: Text(
+              reporting ? 'Confirmando...' : 'Pasajero no se presentó',
+            ),
+          ),
+          if (!canReportNoShow && !reporting) ...[
+            const SizedBox(height: 6),
+            Center(
+              child: Text(
+                'Disponible en $countdown',
+                style: const TextStyle(
+                  fontSize: 12,
+                  color: DriverPalette.brown,
+                ),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------
 // DRIVER_ARRIVED + PIN — widgets de Checkpoint B
 // ---------------------------------------------------------------------
 
@@ -2214,7 +2899,8 @@ class _PinInput extends StatelessWidget {
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: List.generate(_length, (index) {
                   final digit = index < text.length ? text[index] : '';
-                  final isNextToFill = enabled && hasFocus && index == text.length;
+                  final isNextToFill =
+                      enabled && hasFocus && index == text.length;
 
                   return _PinBox(
                     key: ValueKey('pin-box-$index'),

@@ -14,6 +14,7 @@ import 'package:driver/features/driver/domain/driver_assigned_passenger.dart';
 import 'package:driver/features/driver/domain/driver_cancellation_reason.dart';
 import 'package:driver/features/driver/domain/driver_operational_state.dart';
 import 'package:driver/features/driver/domain/driver_ride_completion.dart';
+import 'package:driver/features/driver/domain/driver_ride_waiting.dart';
 import 'package:driver/features/driver/presentation/driver_active_ride_screen.dart';
 import 'package:driver/features/driver/presentation/driver_home_map.dart';
 
@@ -89,7 +90,9 @@ void main() {
       expect(find.textContaining('0.0'), findsNothing);
     });
 
-    testWidgets('D: muestra agreedFare real (no estimatedFare)', (tester) async {
+    testWidgets('D: muestra agreedFare real (no estimatedFare)', (
+      tester,
+    ) async {
       final ride = _rideFixture(
         status: 'DRIVER_ASSIGNED',
         agreedFare: '8.00',
@@ -138,7 +141,10 @@ void main() {
       final texts = _visibleTexts(tester).join(' | ');
 
       expect(texts.toLowerCase(), isNot(contains('eta')));
-      expect(RegExp(r'\d+\s*min\b', caseSensitive: false).hasMatch(texts), isFalse);
+      expect(
+        RegExp(r'\d+\s*min\b', caseSensitive: false).hasMatch(texts),
+        isFalse,
+      );
     });
 
     testWidgets('H: NO muestra phone/chat', (tester) async {
@@ -185,7 +191,9 @@ void main() {
       },
     );
 
-    testWidgets('K: CTA llama startArrival exactamente una vez', (tester) async {
+    testWidgets('K: CTA llama startArrival exactamente una vez', (
+      tester,
+    ) async {
       final assigned = _rideFixture(status: 'DRIVER_ASSIGNED');
       final arriving = _rideFixture(status: 'DRIVER_ARRIVING');
 
@@ -203,35 +211,34 @@ void main() {
       expect(rides.startArrivalCalls, 1);
     });
 
-    testWidgets(
-      'L: no cambia status localmente antes de la respuesta real',
-      (tester) async {
-        final assigned = _rideFixture(status: 'DRIVER_ASSIGNED');
-        final arriving = _rideFixture(status: 'DRIVER_ARRIVING');
+    testWidgets('L: no cambia status localmente antes de la respuesta real', (
+      tester,
+    ) async {
+      final assigned = _rideFixture(status: 'DRIVER_ASSIGNED');
+      final arriving = _rideFixture(status: 'DRIVER_ARRIVING');
 
-        final rides = _FakeRidesRepository(activeRideQueue: [assigned])
-          ..startArrivalGate = Completer<DriverActiveRide>();
+      final rides = _FakeRidesRepository(activeRideQueue: [assigned])
+        ..startArrivalGate = Completer<DriverActiveRide>();
 
-        await _pumpActiveRide(tester, rides: rides);
-        await tester.pump();
+      await _pumpActiveRide(tester, rides: rides);
+      await tester.pump();
 
-        expect(find.text('Pasajero asignado'), findsOneWidget);
+      expect(find.text('Pasajero asignado'), findsOneWidget);
 
-        await tester.ensureVisible(find.text('Ir a recoger al pasajero'));
+      await tester.ensureVisible(find.text('Ir a recoger al pasajero'));
       await tester.tap(find.text('Ir a recoger al pasajero'));
-        await tester.pump();
+      await tester.pump();
 
-        // Todavía no respondió Backend: sigue mostrando el estado anterior.
-        expect(find.text('Pasajero asignado'), findsOneWidget);
-        expect(find.text('En camino al pasajero'), findsNothing);
+      // Todavía no respondió Backend: sigue mostrando el estado anterior.
+      expect(find.text('Pasajero asignado'), findsOneWidget);
+      expect(find.text('En camino al pasajero'), findsNothing);
 
-        rides.startArrivalGate!.complete(arriving);
-        await tester.pump();
-        await tester.pump();
+      rides.startArrivalGate!.complete(arriving);
+      await tester.pump();
+      await tester.pump();
 
-        expect(find.text('En camino al pasajero'), findsOneWidget);
-      },
-    );
+      expect(find.text('En camino al pasajero'), findsOneWidget);
+    });
   });
 
   group('DRIVER_ARRIVING', () {
@@ -325,7 +332,10 @@ void main() {
       final texts = _visibleTexts(tester).join(' | ');
 
       expect(texts.toLowerCase(), isNot(contains('eta')));
-      expect(RegExp(r'\d+\s*min\b', caseSensitive: false).hasMatch(texts), isFalse);
+      expect(
+        RegExp(r'\d+\s*min\b', caseSensitive: false).hasMatch(texts),
+        isFalse,
+      );
     });
   });
 
@@ -357,10 +367,7 @@ void main() {
       await _pumpActiveRide(tester, rides: rides);
       await tester.pump();
 
-      expect(
-        find.text('Pide el código de 4 dígitos a Maycol'),
-        findsOneWidget,
-      );
+      expect(find.text('Pide el código de 4 dígitos a Maycol'), findsOneWidget);
     });
 
     testWidgets('C: muestra fallback neutral si passenger es null', (
@@ -376,7 +383,10 @@ void main() {
         find.text('Pide al pasajero su código de 4 dígitos'),
         findsOneWidget,
       );
-      expect(find.textContaining('Pide el código de 4 dígitos a'), findsNothing);
+      expect(
+        find.textContaining('Pide el código de 4 dígitos a'),
+        findsNothing,
+      );
     });
 
     testWidgets('D: muestra agreedFare/displayFare real', (tester) async {
@@ -518,10 +528,7 @@ void main() {
       await tester.pump();
 
       expect(find.text('¡Llegaste!'), findsNothing);
-      expect(
-        find.text('Llegué al destino y finalizar viaje'),
-        findsOneWidget,
-      );
+      expect(find.text('Llegué al destino y finalizar viaje'), findsOneWidget);
     });
 
     testWidgets('rating: visible solo con historial real', (tester) async {
@@ -627,39 +634,36 @@ void main() {
       },
     );
 
-    testWidgets(
-      'último intento: singular "1 intento restante", nunca plural',
-      (tester) async {
-        final ride = _rideFixture(status: 'DRIVER_ARRIVED');
-        final rides = _FakeRidesRepository(activeRideQueue: [ride])
-          ..startRideQueue = [
-            _dioError(
-              statusCode: 400,
-              data: const {
-                'message': 'El código de inicio es incorrecto',
-                'remainingAttempts': 1,
-              },
-            ),
-          ];
-
-        await _pumpActiveRide(tester, rides: rides);
-        await tester.pump();
-
-        await tester.enterText(find.byType(TextField), '9999');
-        await tester.pump();
-        await tester.ensureVisible(find.text('Iniciar viaje'));
-        await tester.tap(find.text('Iniciar viaje'));
-        await tester.pump();
-        await tester.pump();
-
-        expect(find.text('1 intento restante'), findsOneWidget);
-        expect(find.text('1 intentos restantes'), findsNothing);
-      },
-    );
-
-    testWidgets('410: código vencido, no navega a IN_PROGRESS', (
+    testWidgets('último intento: singular "1 intento restante", nunca plural', (
       tester,
     ) async {
+      final ride = _rideFixture(status: 'DRIVER_ARRIVED');
+      final rides = _FakeRidesRepository(activeRideQueue: [ride])
+        ..startRideQueue = [
+          _dioError(
+            statusCode: 400,
+            data: const {
+              'message': 'El código de inicio es incorrecto',
+              'remainingAttempts': 1,
+            },
+          ),
+        ];
+
+      await _pumpActiveRide(tester, rides: rides);
+      await tester.pump();
+
+      await tester.enterText(find.byType(TextField), '9999');
+      await tester.pump();
+      await tester.ensureVisible(find.text('Iniciar viaje'));
+      await tester.tap(find.text('Iniciar viaje'));
+      await tester.pump();
+      await tester.pump();
+
+      expect(find.text('1 intento restante'), findsOneWidget);
+      expect(find.text('1 intentos restantes'), findsNothing);
+    });
+
+    testWidgets('410: código vencido, no navega a IN_PROGRESS', (tester) async {
       final ride = _rideFixture(status: 'DRIVER_ARRIVED');
       final rides = _FakeRidesRepository(activeRideQueue: [ride])
         ..startRideQueue = [
@@ -684,75 +688,73 @@ void main() {
       expect(find.text('Viaje en curso'), findsNothing);
     });
 
-    testWidgets(
-      '423: código bloqueado, deja el submit deshabilitado',
-      (tester) async {
-        final ride = _rideFixture(status: 'DRIVER_ARRIVED');
-        final rides = _FakeRidesRepository(activeRideQueue: [ride])
-          ..startRideQueue = [
-            _dioError(
-              statusCode: 423,
-              data: const {
-                'message': 'El código fue bloqueado por demasiados intentos',
-              },
-            ),
-          ];
+    testWidgets('423: código bloqueado, deja el submit deshabilitado', (
+      tester,
+    ) async {
+      final ride = _rideFixture(status: 'DRIVER_ARRIVED');
+      final rides = _FakeRidesRepository(activeRideQueue: [ride])
+        ..startRideQueue = [
+          _dioError(
+            statusCode: 423,
+            data: const {
+              'message': 'El código fue bloqueado por demasiados intentos',
+            },
+          ),
+        ];
 
-        await _pumpActiveRide(tester, rides: rides);
-        await tester.pump();
+      await _pumpActiveRide(tester, rides: rides);
+      await tester.pump();
 
-        await tester.enterText(find.byType(TextField), '1234');
-        await tester.pump();
-        await tester.ensureVisible(find.text('Iniciar viaje'));
-        await tester.tap(find.text('Iniciar viaje'));
-        await tester.pump();
-        await tester.pump();
+      await tester.enterText(find.byType(TextField), '1234');
+      await tester.pump();
+      await tester.ensureVisible(find.text('Iniciar viaje'));
+      await tester.tap(find.text('Iniciar viaje'));
+      await tester.pump();
+      await tester.pump();
 
-        expect(find.text('Código bloqueado'), findsOneWidget);
+      expect(find.text('Código bloqueado'), findsOneWidget);
 
-        // Aunque se reingresen 4 dígitos, el submit sigue bloqueado.
-        await tester.enterText(find.byType(TextField), '5678');
-        await tester.pump();
+      // Aunque se reingresen 4 dígitos, el submit sigue bloqueado.
+      await tester.enterText(find.byType(TextField), '5678');
+      await tester.pump();
 
-        expect(_startButton(tester).onPressed, isNull);
-      },
-    );
+      expect(_startButton(tester).onPressed, isNull);
+    });
 
-    testWidgets(
-      '400 de GPS/distancia NO se muestra como "Código incorrecto"',
-      (tester) async {
-        final ride = _rideFixture(status: 'DRIVER_ARRIVED');
-        final rides = _FakeRidesRepository(activeRideQueue: [ride])
-          ..startRideQueue = [
-            _dioError(
-              statusCode: 400,
-              data: const {
-                'message':
-                    'Debes estar cerca del punto de origen para iniciar el viaje',
-                'distanceToOriginMeters': 320,
-                'maximumStartDistanceMeters': 200,
-              },
-            ),
-          ];
+    testWidgets('400 de GPS/distancia NO se muestra como "Código incorrecto"', (
+      tester,
+    ) async {
+      final ride = _rideFixture(status: 'DRIVER_ARRIVED');
+      final rides = _FakeRidesRepository(activeRideQueue: [ride])
+        ..startRideQueue = [
+          _dioError(
+            statusCode: 400,
+            data: const {
+              'message':
+                  'Debes estar cerca del punto de origen para iniciar el viaje',
+              'distanceToOriginMeters': 320,
+              'maximumStartDistanceMeters': 200,
+            },
+          ),
+        ];
 
-        await _pumpActiveRide(tester, rides: rides);
-        await tester.pump();
+      await _pumpActiveRide(tester, rides: rides);
+      await tester.pump();
 
-        await tester.enterText(find.byType(TextField), '1234');
-        await tester.pump();
-        await tester.ensureVisible(find.text('Iniciar viaje'));
-        await tester.tap(find.text('Iniciar viaje'));
-        await tester.pump();
-        await tester.pump();
+      await tester.enterText(find.byType(TextField), '1234');
+      await tester.pump();
+      await tester.ensureVisible(find.text('Iniciar viaje'));
+      await tester.tap(find.text('Iniciar viaje'));
+      await tester.pump();
+      await tester.pump();
 
-        expect(find.text('Código incorrecto'), findsNothing);
-        expect(find.text('No pudimos validar tu ubicación'), findsOneWidget);
-        expect(
-          find.text('Estás a 320 m del punto de recojo (máximo 200 m).'),
-          findsOneWidget,
-        );
-      },
-    );
+      expect(find.text('Código incorrecto'), findsNothing);
+      expect(find.text('No pudimos validar tu ubicación'), findsOneWidget);
+      expect(
+        find.text('Estás a 320 m del punto de recojo (máximo 200 m).'),
+        findsOneWidget,
+      );
+    });
 
     testWidgets(
       'error de red: muestra mensaje de retry y conserva el PIN ingresado',
@@ -800,26 +802,24 @@ void main() {
       await tester.pump();
 
       expect(find.text('¡Llegaste!'), findsNothing);
-      expect(
-        find.text('Llegué al destino y finalizar viaje'),
-        findsOneWidget,
-      );
+      expect(find.text('Llegué al destino y finalizar viaje'), findsOneWidget);
     });
 
-    testWidgets('restore: monta directo en DRIVER_ARRIVED sin pasar por otros estados', (
-      tester,
-    ) async {
-      final ride = _rideFixture(status: 'DRIVER_ARRIVED');
-      final rides = _FakeRidesRepository(activeRideQueue: [ride]);
+    testWidgets(
+      'restore: monta directo en DRIVER_ARRIVED sin pasar por otros estados',
+      (tester) async {
+        final ride = _rideFixture(status: 'DRIVER_ARRIVED');
+        final rides = _FakeRidesRepository(activeRideQueue: [ride]);
 
-      await _pumpActiveRide(tester, rides: rides);
-      await tester.pump();
+        await _pumpActiveRide(tester, rides: rides);
+        await tester.pump();
 
-      expect(find.text('¡Llegaste!'), findsOneWidget);
-      expect(find.text('S/ ${ride.displayFare}'), findsOneWidget);
-      expect(find.text(ride.passenger!.firstName), findsOneWidget);
-      expect(rides.getActiveRideCalls, greaterThanOrEqualTo(1));
-    });
+        expect(find.text('¡Llegaste!'), findsOneWidget);
+        expect(find.text('S/ ${ride.displayFare}'), findsOneWidget);
+        expect(find.text(ride.passenger!.firstName), findsOneWidget);
+        expect(rides.getActiveRideCalls, greaterThanOrEqualTo(1));
+      },
+    );
 
     group('Responsive', () {
       testWidgets('360x640 con teclado abierto sin overflow', (tester) async {
@@ -850,6 +850,514 @@ void main() {
 
         await _pumpArrivedStressScenario(tester);
       });
+    });
+  });
+
+  group('Passenger No-show (Checkpoint G2)', () {
+    testWidgets('1: sin waiting activo muestra "Iniciar tiempo de espera"', (
+      tester,
+    ) async {
+      final ride = _rideFixture(status: 'DRIVER_ARRIVED');
+      final rides = _FakeRidesRepository(activeRideQueue: [ride])
+        ..getRideWaitingQueue = [null];
+
+      await _pumpActiveRide(tester, rides: rides);
+      await tester.pump();
+      await tester.pump();
+
+      expect(find.text('Iniciar tiempo de espera'), findsOneWidget);
+      expect(find.text('Esperando al pasajero'), findsNothing);
+    });
+
+    testWidgets('2: tap "Iniciar tiempo de espera" dispara startRideWaiting '
+        'una sola vez', (tester) async {
+      final ride = _rideFixture(status: 'DRIVER_ARRIVED');
+      final waiting = _waitingFixture();
+      final rides = _FakeRidesRepository(activeRideQueue: [ride])
+        ..getRideWaitingQueue = [null]
+        ..startRideWaitingQueue = [waiting];
+
+      await _pumpActiveRide(tester, rides: rides);
+      await tester.pump();
+      await tester.pump();
+
+      await tester.ensureVisible(find.text('Iniciar tiempo de espera'));
+      await tester.tap(find.text('Iniciar tiempo de espera'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 50));
+
+      expect(rides.startRideWaitingCalls, 1);
+      expect(find.text('Esperando al pasajero'), findsOneWidget);
+    });
+
+    testWidgets('3: loading evita doble tap en "Iniciar tiempo de espera"', (
+      tester,
+    ) async {
+      final ride = _rideFixture(status: 'DRIVER_ARRIVED');
+      final rides = _FakeRidesRepository(activeRideQueue: [ride])
+        ..getRideWaitingQueue = [null]
+        ..startRideWaitingGate = Completer<DriverRideWaiting>();
+
+      await _pumpActiveRide(tester, rides: rides);
+      await tester.pump();
+      await tester.pump();
+
+      await tester.ensureVisible(find.text('Iniciar tiempo de espera'));
+      await tester.tap(find.text('Iniciar tiempo de espera'));
+      await tester.pump();
+
+      expect(find.text('Iniciando espera...'), findsOneWidget);
+
+      await tester.tap(find.text('Iniciando espera...'), warnIfMissed: false);
+      await tester.pump();
+
+      expect(rides.startRideWaitingCalls, 1);
+
+      rides.startRideWaitingGate!.complete(_waitingFixture());
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 50));
+    });
+
+    testWidgets('4: waiting activo muestra el contador MM:SS real de '
+        'Backend', (tester) async {
+      final ride = _rideFixture(status: 'DRIVER_ARRIVED');
+      final waiting = _waitingFixture(remainingWaitingSeconds: 277);
+      final rides = _FakeRidesRepository(activeRideQueue: [ride])
+        ..getRideWaitingQueue = [waiting];
+
+      await _pumpActiveRide(tester, rides: rides);
+      await tester.pump();
+      await tester.pump();
+
+      expect(find.text('Esperando al pasajero'), findsOneWidget);
+      expect(find.text('04:37'), findsOneWidget);
+    });
+
+    testWidgets('5: canReportNoShow=false: CTA "Pasajero no se presentó" '
+        'deshabilitado', (tester) async {
+      final ride = _rideFixture(status: 'DRIVER_ARRIVED');
+      final waiting = _waitingFixture(
+        canReportNoShow: false,
+        remainingWaitingSeconds: 120,
+      );
+      final rides = _FakeRidesRepository(activeRideQueue: [ride])
+        ..getRideWaitingQueue = [waiting];
+
+      await _pumpActiveRide(tester, rides: rides);
+      await tester.pump();
+      await tester.pump();
+
+      final button = tester.widget<OutlinedButton>(
+        find.ancestor(
+          of: find.text('Pasajero no se presentó'),
+          matching: find.byType(OutlinedButton),
+        ),
+      );
+
+      expect(button.onPressed, isNull);
+      expect(find.text('Disponible en 02:00'), findsOneWidget);
+    });
+
+    testWidgets(
+      '6: remaining=0 pero canReportNoShow=false: CTA SIGUE deshabilitado '
+      '(la autoridad es Backend, nunca el contador local)',
+      (tester) async {
+        final ride = _rideFixture(status: 'DRIVER_ARRIVED');
+        final waiting = _waitingFixture(
+          remainingWaitingSeconds: 0,
+          canReportNoShow: false,
+        );
+        final rides = _FakeRidesRepository(activeRideQueue: [ride])
+          ..getRideWaitingQueue = [waiting];
+
+        await _pumpActiveRide(tester, rides: rides);
+        await tester.pump();
+        await tester.pump();
+
+        expect(find.text('00:00'), findsWidgets);
+
+        final button = tester.widget<OutlinedButton>(
+          find.ancestor(
+            of: find.text('Pasajero no se presentó'),
+            matching: find.byType(OutlinedButton),
+          ),
+        );
+
+        expect(button.onPressed, isNull);
+      },
+    );
+
+    testWidgets('7: canReportNoShow=true: CTA "Pasajero no se presentó" '
+        'habilitado', (tester) async {
+      final ride = _rideFixture(status: 'DRIVER_ARRIVED');
+      final waiting = _waitingFixture(
+        canReportNoShow: true,
+        remainingWaitingSeconds: 0,
+      );
+      final rides = _FakeRidesRepository(activeRideQueue: [ride])
+        ..getRideWaitingQueue = [waiting];
+
+      await _pumpActiveRide(tester, rides: rides);
+      await tester.pump();
+      await tester.pump();
+
+      final button = tester.widget<OutlinedButton>(
+        find.ancestor(
+          of: find.text('Pasajero no se presentó'),
+          matching: find.byType(OutlinedButton),
+        ),
+      );
+
+      expect(button.onPressed, isNotNull);
+      expect(find.textContaining('Disponible en'), findsNothing);
+    });
+
+    testWidgets('8: tap "Pasajero no se presentó" abre confirmación', (
+      tester,
+    ) async {
+      final ride = _rideFixture(status: 'DRIVER_ARRIVED');
+      final waiting = _waitingFixture(canReportNoShow: true);
+      final rides = _FakeRidesRepository(activeRideQueue: [ride])
+        ..getRideWaitingQueue = [waiting];
+
+      await _pumpActiveRide(tester, rides: rides);
+      await tester.pump();
+      await tester.pump();
+
+      await tester.ensureVisible(find.text('Pasajero no se presentó'));
+      await tester.tap(find.text('Pasajero no se presentó'));
+      await tester.pumpAndSettle();
+
+      expect(
+        find.text('¿Confirmar que el pasajero no se presentó?'),
+        findsOneWidget,
+      );
+      expect(rides.reportPassengerNoShowCalls, 0);
+    });
+
+    testWidgets('9: "Volver" en la confirmación NO dispara '
+        'reportPassengerNoShow', (tester) async {
+      final ride = _rideFixture(status: 'DRIVER_ARRIVED');
+      final waiting = _waitingFixture(canReportNoShow: true);
+      final rides = _FakeRidesRepository(activeRideQueue: [ride])
+        ..getRideWaitingQueue = [waiting];
+
+      await _pumpActiveRide(tester, rides: rides);
+      await tester.pump();
+      await tester.pump();
+
+      await tester.ensureVisible(find.text('Pasajero no se presentó'));
+      await tester.tap(find.text('Pasajero no se presentó'));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('Volver'));
+      await tester.pumpAndSettle();
+
+      expect(rides.reportPassengerNoShowCalls, 0);
+      expect(find.text('Esperando al pasajero'), findsOneWidget);
+    });
+
+    testWidgets(
+      '10/11: confirmar publica ubicación fresca y hace POST no-show',
+      (tester) async {
+        final ride = _rideFixture(status: 'DRIVER_ARRIVED');
+        final waiting = _waitingFixture(canReportNoShow: true);
+        final operations = _FakeOperationsRepository();
+        final rides = _FakeRidesRepository(activeRideQueue: [ride])
+          ..getRideWaitingQueue = [waiting];
+
+        final router = GoRouter(
+          initialLocation: '/active-ride',
+          routes: [
+            GoRoute(
+              path: '/active-ride',
+              builder: (context, state) => const DriverActiveRideScreen(),
+            ),
+            GoRoute(
+              path: '/home',
+              builder: (context, state) =>
+                  const Scaffold(body: Text('HOME_ROUTE')),
+            ),
+          ],
+        );
+        addTearDown(router.dispose);
+
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [
+              driverRidesRepositoryProvider.overrideWithValue(rides),
+              driverOperationsRepositoryProvider.overrideWithValue(operations),
+            ],
+            child: MaterialApp.router(routerConfig: router),
+          ),
+        );
+        await tester.pump();
+        await tester.pump();
+
+        await tester.ensureVisible(find.text('Pasajero no se presentó'));
+        await tester.tap(find.text('Pasajero no se presentó'));
+        await tester.pumpAndSettle();
+
+        final updateLocationCallsBefore = operations.updateLocationCalls;
+
+        await tester.tap(find.text('Sí, confirmar'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 50));
+        await tester.pump(const Duration(milliseconds: 50));
+
+        expect(rides.reportPassengerNoShowCalls, 1);
+        expect(
+          operations.updateLocationCalls,
+          greaterThan(updateLocationCallsBefore),
+        );
+
+        // 12: navega a Home sin mutar disponibilidad manualmente.
+        expect(find.text('HOME_ROUTE'), findsOneWidget);
+      },
+    );
+
+    testWidgets(
+      '13: 409 early no-show: permanece en ARRIVED, refresca waiting y NO '
+      'navega a Home',
+      (tester) async {
+        final ride = _rideFixture(status: 'DRIVER_ARRIVED');
+        final waiting = _waitingFixture(canReportNoShow: true);
+        final resynced = _waitingFixture(
+          canReportNoShow: false,
+          remainingWaitingSeconds: 42,
+        );
+        final rides = _FakeRidesRepository(activeRideQueue: [ride])
+          ..getRideWaitingQueue = [waiting, resynced]
+          ..reportPassengerNoShowResult = _dioError(
+            statusCode: 409,
+            data: const {
+              'message': 'Aún debes esperar antes de reportarlo',
+              'remainingSeconds': 42,
+            },
+          );
+
+        await _pumpActiveRide(tester, rides: rides);
+        await tester.pump();
+        await tester.pump();
+
+        await tester.ensureVisible(find.text('Pasajero no se presentó'));
+        await tester.tap(find.text('Pasajero no se presentó'));
+        await tester.pumpAndSettle();
+
+        await tester.tap(find.text('Sí, confirmar'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 50));
+        await tester.pump(const Duration(milliseconds: 50));
+
+        expect(find.text('Esperando al pasajero'), findsOneWidget);
+        expect(
+          find.text('Aún debes esperar antes de reportarlo'),
+          findsOneWidget,
+        );
+      },
+    );
+
+    testWidgets('14: error de red permanece en pantalla y permite retry', (
+      tester,
+    ) async {
+      final ride = _rideFixture(status: 'DRIVER_ARRIVED');
+      final waiting = _waitingFixture(canReportNoShow: true);
+      final rides = _FakeRidesRepository(activeRideQueue: [ride])
+        ..getRideWaitingQueue = [waiting]
+        ..reportPassengerNoShowResult = _dioNetworkError();
+
+      await _pumpActiveRide(tester, rides: rides);
+      await tester.pump();
+      await tester.pump();
+
+      await tester.ensureVisible(find.text('Pasajero no se presentó'));
+      await tester.tap(find.text('Pasajero no se presentó'));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('Sí, confirmar'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 50));
+
+      expect(find.text('Esperando al pasajero'), findsOneWidget);
+      expect(
+        find.text('No se pudo confirmar. Inténtalo nuevamente.'),
+        findsOneWidget,
+      );
+
+      final button = tester.widget<OutlinedButton>(
+        find.ancestor(
+          of: find.text('Pasajero no se presentó'),
+          matching: find.byType(OutlinedButton),
+        ),
+      );
+
+      expect(button.onPressed, isNotNull);
+    });
+
+    testWidgets(
+      '15: PIN válido durante waiting activo: pasa a IN_PROGRESS y detiene '
+      'el polling de waiting',
+      (tester) async {
+        final ride = _rideFixture(status: 'DRIVER_ARRIVED');
+        final waiting = _waitingFixture(canReportNoShow: true);
+        final rides = _FakeRidesRepository(activeRideQueue: [ride])
+          ..getRideWaitingQueue = [waiting]
+          ..startRideQueue = [_rideFixture(status: 'IN_PROGRESS')];
+
+        await _pumpActiveRide(tester, rides: rides);
+        await tester.pump();
+        await tester.pump();
+
+        expect(find.text('Esperando al pasajero'), findsOneWidget);
+
+        await tester.enterText(find.byType(TextField), '1234');
+        await tester.pump();
+
+        await tester.ensureVisible(find.text('Iniciar viaje'));
+        await tester.tap(find.text('Iniciar viaje'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 50));
+
+        expect(find.text('Viaje en curso'), findsOneWidget);
+        expect(find.text('Esperando al pasajero'), findsNothing);
+        expect(find.text('Pasajero no se presentó'), findsNothing);
+      },
+    );
+
+    testWidgets(
+      '16: restore directo a ARRIVED con waiting existente recupera el '
+      'remaining real de Backend (sin reiniciar el contador)',
+      (tester) async {
+        final ride = _rideFixture(status: 'DRIVER_ARRIVED');
+        final waiting = _waitingFixture(
+          remainingWaitingSeconds: 55,
+          canReportNoShow: false,
+        );
+        final rides = _FakeRidesRepository(activeRideQueue: [ride])
+          ..getRideWaitingQueue = [waiting];
+
+        await _pumpActiveRide(tester, rides: rides);
+        await tester.pump();
+        await tester.pump();
+
+        expect(find.text('00:55'), findsOneWidget);
+        expect(rides.startRideWaitingCalls, 0);
+      },
+    );
+
+    testWidgets(
+      '17: restore directo a ARRIVED sin waiting muestra el estado inicial',
+      (tester) async {
+        final ride = _rideFixture(status: 'DRIVER_ARRIVED');
+        final rides = _FakeRidesRepository(activeRideQueue: [ride])
+          ..getRideWaitingQueue = [null];
+
+        await _pumpActiveRide(tester, rides: rides);
+        await tester.pump();
+        await tester.pump();
+
+        expect(find.text('Iniciar tiempo de espera'), findsOneWidget);
+      },
+    );
+
+    testWidgets('18: app resume con Ride en ARRIVED resincroniza waiting de '
+        'inmediato', (tester) async {
+      final ride = _rideFixture(status: 'DRIVER_ARRIVED');
+      final before = _waitingFixture(
+        canReportNoShow: false,
+        remainingWaitingSeconds: 90,
+      );
+      final after = _waitingFixture(
+        canReportNoShow: true,
+        remainingWaitingSeconds: 0,
+      );
+      final rides = _FakeRidesRepository(activeRideQueue: [ride])
+        ..getRideWaitingQueue = [before, after];
+
+      await _pumpActiveRide(tester, rides: rides);
+      await tester.pump();
+      await tester.pump();
+
+      expect(rides.getRideWaitingCalls, 1);
+
+      final state = tester.state<State<DriverActiveRideScreen>>(
+        find.byType(DriverActiveRideScreen),
+      );
+
+      (state as WidgetsBindingObserver).didChangeAppLifecycleState(
+        AppLifecycleState.resumed,
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 50));
+
+      expect(rides.getRideWaitingCalls, 2);
+
+      final button = tester.widget<OutlinedButton>(
+        find.ancestor(
+          of: find.text('Pasajero no se presentó'),
+          matching: find.byType(OutlinedButton),
+        ),
+      );
+
+      expect(button.onPressed, isNotNull);
+    });
+
+    testWidgets(
+      '19: el botón "Cancelar viaje" de G1 sigue disponible con waiting '
+      'activo',
+      (tester) async {
+        final ride = _rideFixture(status: 'DRIVER_ARRIVED');
+        final waiting = _waitingFixture(canReportNoShow: true);
+        final rides = _FakeRidesRepository(activeRideQueue: [ride])
+          ..getRideWaitingQueue = [waiting];
+
+        await _pumpActiveRide(tester, rides: rides);
+        await tester.pump();
+        await tester.pump();
+
+        expect(find.text('Cancelar viaje'), findsOneWidget);
+      },
+    );
+
+    testWidgets('20: IN_PROGRESS no muestra ninguna tarjeta de waiting', (
+      tester,
+    ) async {
+      final ride = _rideFixture(status: 'IN_PROGRESS');
+      final rides = _FakeRidesRepository(activeRideQueue: [ride]);
+
+      await _pumpActiveRide(tester, rides: rides);
+      await tester.pump();
+      await tester.pump();
+
+      expect(find.text('Iniciar tiempo de espera'), findsNothing);
+      expect(find.text('Esperando al pasajero'), findsNothing);
+      expect(find.text('Pasajero no se presentó'), findsNothing);
+    });
+
+    testWidgets('21: COMPLETED no muestra ninguna tarjeta de waiting', (
+      tester,
+    ) async {
+      final ride = _rideFixture(status: 'IN_PROGRESS');
+      final rides = _FakeRidesRepository(activeRideQueue: [ride])
+        ..completeRideQueue = [_completionFixture()];
+
+      await _pumpActiveRide(tester, rides: rides);
+      await tester.pump();
+      await tester.pump();
+
+      await tester.ensureVisible(
+        find.text('Llegué al destino y finalizar viaje'),
+      );
+      await tester.tap(find.text('Llegué al destino y finalizar viaje'));
+      await tester.pump();
+      await tester.tap(find.text('Sí, finalizar viaje'));
+      await tester.pump();
+      await tester.pump();
+
+      expect(find.text('¡Viaje completado!'), findsOneWidget);
+      expect(find.text('Iniciar tiempo de espera'), findsNothing);
+      expect(find.text('Esperando al pasajero'), findsNothing);
+      expect(find.text('Pasajero no se presentó'), findsNothing);
     });
   });
 
@@ -972,9 +1480,7 @@ void main() {
       expect(find.text('DESTINO'), findsOneWidget);
     });
 
-    testWidgets('H/I/J: NO muestra ETA, minutos ni porcentaje', (
-      tester,
-    ) async {
+    testWidgets('H/I/J: NO muestra ETA, minutos ni porcentaje', (tester) async {
       final ride = _rideFixture(status: 'IN_PROGRESS');
       final rides = _FakeRidesRepository(activeRideQueue: [ride]);
 
@@ -1014,10 +1520,7 @@ void main() {
       await _pumpActiveRide(tester, rides: rides);
       await tester.pump();
 
-      expect(
-        find.text('Llegué al destino y finalizar viaje'),
-        findsOneWidget,
-      );
+      expect(find.text('Llegué al destino y finalizar viaje'), findsOneWidget);
     });
 
     testWidgets(
@@ -1095,34 +1598,33 @@ void main() {
       },
     );
 
-    testWidgets(
-      'no cambia status local antes de la respuesta real (gate)',
-      (tester) async {
-        final ride = _rideFixture(status: 'IN_PROGRESS');
-        final rides = _FakeRidesRepository(activeRideQueue: [ride])
-          ..completeRideGate = Completer<DriverRideCompletion>();
+    testWidgets('no cambia status local antes de la respuesta real (gate)', (
+      tester,
+    ) async {
+      final ride = _rideFixture(status: 'IN_PROGRESS');
+      final rides = _FakeRidesRepository(activeRideQueue: [ride])
+        ..completeRideGate = Completer<DriverRideCompletion>();
 
-        await _pumpActiveRide(tester, rides: rides);
-        await tester.pump();
+      await _pumpActiveRide(tester, rides: rides);
+      await tester.pump();
 
-        await tester.ensureVisible(
-          find.text('Llegué al destino y finalizar viaje'),
-        );
-        await tester.tap(find.text('Llegué al destino y finalizar viaje'));
-        await tester.pump();
-        await tester.tap(find.text('Sí, finalizar viaje'));
-        await tester.pump();
+      await tester.ensureVisible(
+        find.text('Llegué al destino y finalizar viaje'),
+      );
+      await tester.tap(find.text('Llegué al destino y finalizar viaje'));
+      await tester.pump();
+      await tester.tap(find.text('Sí, finalizar viaje'));
+      await tester.pump();
 
-        expect(find.text('Viaje en curso'), findsOneWidget);
-        expect(find.text('¡Viaje completado!'), findsNothing);
+      expect(find.text('Viaje en curso'), findsOneWidget);
+      expect(find.text('¡Viaje completado!'), findsNothing);
 
-        rides.completeRideGate!.complete(_completionFixture());
-        await tester.pump();
-        await tester.pump();
+      rides.completeRideGate!.complete(_completionFixture());
+      await tester.pump();
+      await tester.pump();
 
-        expect(find.text('¡Viaje completado!'), findsOneWidget);
-      },
-    );
+      expect(find.text('¡Viaje completado!'), findsOneWidget);
+    });
 
     testWidgets(
       'GPS distancia: 400 con distanceToDestinationMeters muestra mensaje real, sigue IN_PROGRESS',
@@ -1227,69 +1729,68 @@ void main() {
       expect(rides.getActiveRideCalls, greaterThanOrEqualTo(2));
     });
 
-    testWidgets(
-      'network/5xx: muestra mensaje de retry, no pierde el ride',
-      (tester) async {
-        final ride = _rideFixture(status: 'IN_PROGRESS');
-        final rides = _FakeRidesRepository(activeRideQueue: [ride])
-          ..completeRideQueue = [_dioNetworkError()];
-
-        await _pumpActiveRide(tester, rides: rides);
-        await tester.pump();
-
-        await tester.ensureVisible(
-          find.text('Llegué al destino y finalizar viaje'),
-        );
-        await tester.tap(find.text('Llegué al destino y finalizar viaje'));
-        await tester.pump();
-        await tester.tap(find.text('Sí, finalizar viaje'));
-        await tester.pump();
-        await tester.pump();
-
-        expect(find.text('No pudimos finalizar el viaje'), findsOneWidget);
-        expect(find.text('Inténtalo nuevamente.'), findsOneWidget);
-        expect(find.text('Viaje en curso'), findsOneWidget);
-      },
-    );
-
-    testWidgets('restore: monta directo en IN_PROGRESS sin pasar por otros estados', (
+    testWidgets('network/5xx: muestra mensaje de retry, no pierde el ride', (
       tester,
     ) async {
       final ride = _rideFixture(status: 'IN_PROGRESS');
-      final rides = _FakeRidesRepository(activeRideQueue: [ride]);
+      final rides = _FakeRidesRepository(activeRideQueue: [ride])
+        ..completeRideQueue = [_dioNetworkError()];
 
       await _pumpActiveRide(tester, rides: rides);
       await tester.pump();
 
+      await tester.ensureVisible(
+        find.text('Llegué al destino y finalizar viaje'),
+      );
+      await tester.tap(find.text('Llegué al destino y finalizar viaje'));
+      await tester.pump();
+      await tester.tap(find.text('Sí, finalizar viaje'));
+      await tester.pump();
+      await tester.pump();
+
+      expect(find.text('No pudimos finalizar el viaje'), findsOneWidget);
+      expect(find.text('Inténtalo nuevamente.'), findsOneWidget);
       expect(find.text('Viaje en curso'), findsOneWidget);
-      expect(find.text('S/ ${ride.displayFare}'), findsOneWidget);
-      expect(find.text(ride.passenger!.firstName), findsOneWidget);
-      expect(find.text(ride.destinationAddress), findsOneWidget);
-      expect(rides.getActiveRideCalls, greaterThanOrEqualTo(1));
     });
 
+    testWidgets(
+      'restore: monta directo en IN_PROGRESS sin pasar por otros estados',
+      (tester) async {
+        final ride = _rideFixture(status: 'IN_PROGRESS');
+        final rides = _FakeRidesRepository(activeRideQueue: [ride]);
+
+        await _pumpActiveRide(tester, rides: rides);
+        await tester.pump();
+
+        expect(find.text('Viaje en curso'), findsOneWidget);
+        expect(find.text('S/ ${ride.displayFare}'), findsOneWidget);
+        expect(find.text(ride.passenger!.firstName), findsOneWidget);
+        expect(find.text(ride.destinationAddress), findsOneWidget);
+        expect(rides.getActiveRideCalls, greaterThanOrEqualTo(1));
+      },
+    );
+
     group('Mapa', () {
-      testWidgets(
-        'destination marker cuando hay coordenadas válidas',
-        (tester) async {
-          DriverHomeMapResolved? resolved;
+      testWidgets('destination marker cuando hay coordenadas válidas', (
+        tester,
+      ) async {
+        DriverHomeMapResolved? resolved;
 
-          driverHomeMapBuilderOverride = (context, config) {
-            resolved = config;
-            return const SizedBox.shrink();
-          };
+        driverHomeMapBuilderOverride = (context, config) {
+          resolved = config;
+          return const SizedBox.shrink();
+        };
 
-          final ride = _rideFixture(status: 'IN_PROGRESS');
-          final rides = _FakeRidesRepository(activeRideQueue: [ride]);
+        final ride = _rideFixture(status: 'IN_PROGRESS');
+        final rides = _FakeRidesRepository(activeRideQueue: [ride]);
 
-          await _pumpActiveRide(tester, rides: rides);
-          await tester.pump();
-          await tester.pump();
+        await _pumpActiveRide(tester, rides: rides);
+        await tester.pump();
+        await tester.pump();
 
-          expect(resolved, isNotNull);
-          expect(resolved!.markers, hasLength(2));
-        },
-      );
+        expect(resolved, isNotNull);
+        expect(resolved!.markers, hasLength(2));
+      });
 
       testWidgets(
         'ausencia segura de destination marker si la coordenada es inválida/null',
@@ -1317,30 +1818,27 @@ void main() {
         },
       );
 
-      testWidgets(
-        'el encuadre Driver+destino se solicita una sola vez',
-        (tester) async {
-          final ride = _rideFixture(status: 'IN_PROGRESS');
-          final rides = _FakeRidesRepository(activeRideQueue: [ride]);
+      testWidgets('el encuadre Driver+destino se solicita una sola vez', (
+        tester,
+      ) async {
+        final ride = _rideFixture(status: 'IN_PROGRESS');
+        final rides = _FakeRidesRepository(activeRideQueue: [ride]);
 
-          await _pumpActiveRide(tester, rides: rides);
-          await tester.pump();
-          await tester.pump();
+        await _pumpActiveRide(tester, rides: rides);
+        await tester.pump();
+        await tester.pump();
 
-          final dynamic state = tester.state(
-            find.byType(DriverActiveRideScreen),
-          );
+        final dynamic state = tester.state(find.byType(DriverActiveRideScreen));
 
-          final firstRequest = state.debugCameraRequest;
-          expect(firstRequest, isNotNull);
-          expect(firstRequest.secondaryTarget, isNotNull);
+        final firstRequest = state.debugCameraRequest;
+        expect(firstRequest, isNotNull);
+        expect(firstRequest.secondaryTarget, isNotNull);
 
-          await tester.pump(const Duration(seconds: 3));
-          await tester.pump(const Duration(seconds: 10));
+        await tester.pump(const Duration(seconds: 3));
+        await tester.pump(const Duration(seconds: 10));
 
-          expect(state.debugCameraRequest, same(firstRequest));
-        },
-      );
+        expect(state.debugCameraRequest, same(firstRequest));
+      });
     });
 
     group('Responsive', () {
@@ -1523,10 +2021,7 @@ void main() {
           await tester.tap(find.text('Cobrar efectivo'));
           await tester.pumpAndSettle();
 
-          expect(
-            find.text('CASH_PAYMENT_ROUTE ride-42'),
-            findsOneWidget,
-          );
+          expect(find.text('CASH_PAYMENT_ROUTE ride-42'), findsOneWidget);
 
           final afterNavigation = operations.heartbeatCalls;
 
@@ -1651,7 +2146,9 @@ void main() {
           GoRoute(
             path: '/cash-payment/:rideId',
             builder: (context, state) => Scaffold(
-              body: Text('CASH_PAYMENT_ROUTE ${state.pathParameters['rideId']}'),
+              body: Text(
+                'CASH_PAYMENT_ROUTE ${state.pathParameters['rideId']}',
+              ),
             ),
           ),
         ],
@@ -1738,33 +2235,32 @@ void main() {
       },
     );
 
-    testWidgets(
-      'sin ninguna coordenada válida, no se fabrica ningún marker',
-      (tester) async {
-        DriverHomeMapResolved? resolved;
+    testWidgets('sin ninguna coordenada válida, no se fabrica ningún marker', (
+      tester,
+    ) async {
+      DriverHomeMapResolved? resolved;
 
-        driverHomeMapBuilderOverride = (context, config) {
-          resolved = config;
-          return const SizedBox.shrink();
-        };
+      driverHomeMapBuilderOverride = (context, config) {
+        resolved = config;
+        return const SizedBox.shrink();
+      };
 
-        final ride = _rideFixture(
-          status: 'DRIVER_ASSIGNED',
-          originLatitude: null,
-          originLongitude: null,
-          destinationLatitude: null,
-          destinationLongitude: null,
-        );
-        final rides = _FakeRidesRepository(activeRideQueue: [ride]);
+      final ride = _rideFixture(
+        status: 'DRIVER_ASSIGNED',
+        originLatitude: null,
+        originLongitude: null,
+        destinationLatitude: null,
+        destinationLongitude: null,
+      );
+      final rides = _FakeRidesRepository(activeRideQueue: [ride]);
 
-        await _pumpActiveRide(tester, rides: rides);
-        await tester.pump();
-        await tester.pump();
+      await _pumpActiveRide(tester, rides: rides);
+      await tester.pump();
+      await tester.pump();
 
-        expect(resolved, isNotNull);
-        expect(resolved!.markers, isEmpty);
-      },
-    );
+      expect(resolved, isNotNull);
+      expect(resolved!.markers, isEmpty);
+    });
 
     testWidgets(
       'la cámara se encuadra una sola vez (Driver + pickup) sin reencuadrar en cada poll',
@@ -1776,9 +2272,7 @@ void main() {
         await tester.pump();
         await tester.pump();
 
-        final dynamic state = tester.state(
-          find.byType(DriverActiveRideScreen),
-        );
+        final dynamic state = tester.state(find.byType(DriverActiveRideScreen));
 
         final firstRequest = state.debugCameraRequest;
         expect(firstRequest, isNotNull);
@@ -1795,9 +2289,7 @@ void main() {
   });
 
   group('Restore directo (sin pasar por Home/offer)', () {
-    testWidgets('restaura DRIVER_ASSIGNED completo desde cero', (
-      tester,
-    ) async {
+    testWidgets('restaura DRIVER_ASSIGNED completo desde cero', (tester) async {
       final ride = _rideFixture(status: 'DRIVER_ASSIGNED');
       final rides = _FakeRidesRepository(activeRideQueue: [ride]);
 
@@ -1810,9 +2302,7 @@ void main() {
       expect(rides.getActiveRideCalls, greaterThanOrEqualTo(1));
     });
 
-    testWidgets('restaura DRIVER_ARRIVING completo desde cero', (
-      tester,
-    ) async {
+    testWidgets('restaura DRIVER_ARRIVING completo desde cero', (tester) async {
       final ride = _rideFixture(status: 'DRIVER_ARRIVING');
       final rides = _FakeRidesRepository(activeRideQueue: [ride]);
 
@@ -1848,21 +2338,20 @@ void main() {
       await _pumpStressScenario(tester, status: 'DRIVER_ARRIVING');
     });
 
-    testWidgets(
-      '412x915 DRIVER_ASSIGNED con passenger null sin overflow',
-      (tester) async {
-        tester.view.physicalSize = const Size(412, 915);
-        tester.view.devicePixelRatio = 1;
-        addTearDown(tester.view.resetPhysicalSize);
-        addTearDown(tester.view.resetDevicePixelRatio);
+    testWidgets('412x915 DRIVER_ASSIGNED con passenger null sin overflow', (
+      tester,
+    ) async {
+      tester.view.physicalSize = const Size(412, 915);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
 
-        await _pumpStressScenario(
-          tester,
-          status: 'DRIVER_ASSIGNED',
-          passengerNull: true,
-        );
-      },
-    );
+      await _pumpStressScenario(
+        tester,
+        status: 'DRIVER_ASSIGNED',
+        passengerNull: true,
+      );
+    });
   });
 
   group('Cancelación del Driver (Checkpoint G1)', () {
@@ -1985,32 +2474,33 @@ void main() {
         expect(find.text('¿Cancelar este viaje?'), findsOneWidget);
       });
 
-      testWidgets('1 a 4 caracteres: bloquea con error y NO abre confirmación', (
-        tester,
-      ) async {
-        final ride = _rideFixture(status: 'DRIVER_ASSIGNED');
-        final rides = _FakeRidesRepository(activeRideQueue: [ride]);
+      testWidgets(
+        '1 a 4 caracteres: bloquea con error y NO abre confirmación',
+        (tester) async {
+          final ride = _rideFixture(status: 'DRIVER_ASSIGNED');
+          final rides = _FakeRidesRepository(activeRideQueue: [ride]);
 
-        await _pumpActiveRide(tester, rides: rides);
-        await tester.pump();
+          await _pumpActiveRide(tester, rides: rides);
+          await tester.pump();
 
-        await tester.ensureVisible(find.text('Cancelar viaje'));
-        await tester.tap(find.text('Cancelar viaje'));
-        await tester.pumpAndSettle();
+          await tester.ensureVisible(find.text('Cancelar viaje'));
+          await tester.tap(find.text('Cancelar viaje'));
+          await tester.pumpAndSettle();
 
-        await tester.tap(find.text(DriverCancellationReason.other.label));
-        await tester.pump();
+          await tester.tap(find.text(DriverCancellationReason.other.label));
+          await tester.pump();
 
-        await tester.enterText(_cancelDetailFieldFinder, 'abc');
-        await tester.tap(find.text('Continuar'));
-        await tester.pump();
+          await tester.enterText(_cancelDetailFieldFinder, 'abc');
+          await tester.tap(find.text('Continuar'));
+          await tester.pump();
 
-        expect(
-          find.text('Escribe al menos 5 caracteres o deja el campo vacío.'),
-          findsOneWidget,
-        );
-        expect(find.text('¿Cancelar este viaje?'), findsNothing);
-      });
+          expect(
+            find.text('Escribe al menos 5 caracteres o deja el campo vacío.'),
+            findsOneWidget,
+          );
+          expect(find.text('¿Cancelar este viaje?'), findsNothing);
+        },
+      );
 
       testWidgets('5 o más caracteres: válido, avanza a confirmación', (
         tester,
@@ -2192,55 +2682,56 @@ void main() {
         },
       );
 
-      testWidgets('éxito: back stack no permite volver a la pantalla del viaje', (
-        tester,
-      ) async {
-        final ride = _rideFixture(status: 'DRIVER_ASSIGNED');
-        final rides = _FakeRidesRepository(activeRideQueue: [ride]);
+      testWidgets(
+        'éxito: back stack no permite volver a la pantalla del viaje',
+        (tester) async {
+          final ride = _rideFixture(status: 'DRIVER_ASSIGNED');
+          final rides = _FakeRidesRepository(activeRideQueue: [ride]);
 
-        final router = GoRouter(
-          initialLocation: '/active-ride',
-          routes: [
-            GoRoute(
-              path: '/active-ride',
-              builder: (context, state) => const DriverActiveRideScreen(),
-            ),
-            GoRoute(
-              path: '/home',
-              builder: (context, state) =>
-                  const Scaffold(body: Text('HOME_ROUTE')),
-            ),
-          ],
-        );
-        addTearDown(router.dispose);
-
-        await tester.pumpWidget(
-          ProviderScope(
-            overrides: [
-              driverRidesRepositoryProvider.overrideWithValue(rides),
-              driverOperationsRepositoryProvider.overrideWithValue(
-                _FakeOperationsRepository(),
+          final router = GoRouter(
+            initialLocation: '/active-ride',
+            routes: [
+              GoRoute(
+                path: '/active-ride',
+                builder: (context, state) => const DriverActiveRideScreen(),
+              ),
+              GoRoute(
+                path: '/home',
+                builder: (context, state) =>
+                    const Scaffold(body: Text('HOME_ROUTE')),
               ),
             ],
-            child: MaterialApp.router(routerConfig: router),
-          ),
-        );
-        await tester.pump();
+          );
+          addTearDown(router.dispose);
 
-        await _openCancelFlow(
-          tester,
-          reason: DriverCancellationReason.vehicleProblem,
-        );
-        await _confirmCancel(tester);
+          await tester.pumpWidget(
+            ProviderScope(
+              overrides: [
+                driverRidesRepositoryProvider.overrideWithValue(rides),
+                driverOperationsRepositoryProvider.overrideWithValue(
+                  _FakeOperationsRepository(),
+                ),
+              ],
+              child: MaterialApp.router(routerConfig: router),
+            ),
+          );
+          await tester.pump();
 
-        expect(find.text('HOME_ROUTE'), findsOneWidget);
+          await _openCancelFlow(
+            tester,
+            reason: DriverCancellationReason.vehicleProblem,
+          );
+          await _confirmCancel(tester);
 
-        final canPop =
-            router.routerDelegate.navigatorKey.currentState?.canPop() ??
-            false;
+          expect(find.text('HOME_ROUTE'), findsOneWidget);
 
-        expect(canPop, isFalse);
-      });
+          final canPop =
+              router.routerDelegate.navigatorKey.currentState?.canPop() ??
+              false;
+
+          expect(canPop, isFalse);
+        },
+      );
     });
 
     group('loading / double tap', () {
@@ -2444,9 +2935,7 @@ void main() {
           ProviderScope(
             overrides: [
               driverRidesRepositoryProvider.overrideWithValue(rides),
-              driverOperationsRepositoryProvider.overrideWithValue(
-                operations,
-              ),
+              driverOperationsRepositoryProvider.overrideWithValue(operations),
             ],
             child: MaterialApp.router(routerConfig: router),
           ),
@@ -2470,28 +2959,29 @@ void main() {
         expect(operations.heartbeatCalls, heartbeatCallsAfterCancel);
       });
 
-      testWidgets('falla: reanuda el polling exactamente una vez (sin duplicar)', (
-        tester,
-      ) async {
-        final ride = _rideFixture(status: 'DRIVER_ASSIGNED');
-        final rides = _FakeRidesRepository(activeRideQueue: [ride])
-          ..cancelRideResult = _dioNetworkError();
+      testWidgets(
+        'falla: reanuda el polling exactamente una vez (sin duplicar)',
+        (tester) async {
+          final ride = _rideFixture(status: 'DRIVER_ASSIGNED');
+          final rides = _FakeRidesRepository(activeRideQueue: [ride])
+            ..cancelRideResult = _dioNetworkError();
 
-        await _pumpActiveRide(tester, rides: rides);
-        await tester.pump();
+          await _pumpActiveRide(tester, rides: rides);
+          await tester.pump();
 
-        await _openCancelFlow(tester, reason: DriverCancellationReason.other);
-        await _confirmCancel(tester);
+          await _openCancelFlow(tester, reason: DriverCancellationReason.other);
+          await _confirmCancel(tester);
 
-        final callsBefore = rides.getActiveRideCalls;
+          final callsBefore = rides.getActiveRideCalls;
 
-        await tester.pump(const Duration(seconds: 3));
+          await tester.pump(const Duration(seconds: 3));
 
-        // Un único timer de 3s activo tras la falla: exactamente una
-        // llamada adicional, nunca dos (lo que delataría un timer
-        // duplicado corriendo en paralelo).
-        expect(rides.getActiveRideCalls, callsBefore + 1);
-      });
+          // Un único timer de 3s activo tras la falla: exactamente una
+          // llamada adicional, nunca dos (lo que delataría un timer
+          // duplicado corriendo en paralelo).
+          expect(rides.getActiveRideCalls, callsBefore + 1);
+        },
+      );
     });
 
     group('Responsive — flujo de cancelación', () {
@@ -2545,7 +3035,8 @@ void main() {
         await _openCancelFlow(
           tester,
           reason: DriverCancellationReason.safetyConcern,
-          detail: 'Detalle largo para verificar que el diálogo no rompe '
+          detail:
+              'Detalle largo para verificar que el diálogo no rompe '
               'el layout en una pantalla mediana',
         );
 
@@ -2553,20 +3044,21 @@ void main() {
         expect(find.text('¿Cancelar este viaje?'), findsOneWidget);
       });
 
-      testWidgets('412x915: botón secundario conviviendo con el CTA principal', (
-        tester,
-      ) async {
-        tester.view.physicalSize = const Size(412, 915);
-        tester.view.devicePixelRatio = 1;
-        addTearDown(tester.view.resetPhysicalSize);
-        addTearDown(tester.view.resetDevicePixelRatio);
+      testWidgets(
+        '412x915: botón secundario conviviendo con el CTA principal',
+        (tester) async {
+          tester.view.physicalSize = const Size(412, 915);
+          tester.view.devicePixelRatio = 1;
+          addTearDown(tester.view.resetPhysicalSize);
+          addTearDown(tester.view.resetDevicePixelRatio);
 
-        await _pumpStressScenario(tester, status: 'DRIVER_ARRIVING');
+          await _pumpStressScenario(tester, status: 'DRIVER_ARRIVING');
 
-        expect(find.text('Cancelar viaje'), findsOneWidget);
-        expect(find.text('Llegué al punto de recojo'), findsOneWidget);
-        expect(tester.takeException(), isNull);
-      });
+          expect(find.text('Cancelar viaje'), findsOneWidget);
+          expect(find.text('Llegué al punto de recojo'), findsOneWidget);
+          expect(tester.takeException(), isNull);
+        },
+      );
     });
   });
 }
@@ -2746,9 +3238,7 @@ Future<void> _pumpInProgressStressScenario(WidgetTester tester) async {
 
   expect(tester.takeException(), isNull);
 
-  await tester.ensureVisible(
-    find.text('Llegué al destino y finalizar viaje'),
-  );
+  await tester.ensureVisible(find.text('Llegué al destino y finalizar viaje'));
   await tester.tap(find.text('Llegué al destino y finalizar viaje'));
   await tester.pump();
 
@@ -2804,9 +3294,7 @@ FilledButton _startButton(WidgetTester tester) {
 }
 
 DioException _dioError({required int statusCode, Object? data}) {
-  final requestOptions = RequestOptions(
-    path: 'drivers/me/rides/ride-1/start',
-  );
+  final requestOptions = RequestOptions(path: 'drivers/me/rides/ride-1/start');
 
   return DioException(
     requestOptions: requestOptions,
@@ -2888,6 +3376,28 @@ DriverActiveRide _rideFixture({
     estimatedDurationSeconds: 720,
     distanceToOriginMeters: distanceToOriginMeters,
     passenger: resolvedPassenger,
+  );
+}
+
+DriverRideWaiting _waitingFixture({
+  String rideId = 'ride-1',
+  DateTime? waitingStartedAt,
+  DateTime? noShowAvailableAt,
+  num requiredWaitingSeconds = 300,
+  num elapsedWaitingSeconds = 60,
+  num remainingWaitingSeconds = 240,
+  bool canReportNoShow = false,
+  num? startDistanceMeters = 40,
+}) {
+  return DriverRideWaiting(
+    rideId: rideId,
+    waitingStartedAt: waitingStartedAt ?? DateTime.utc(2026, 8, 10, 12),
+    noShowAvailableAt: noShowAvailableAt ?? DateTime.utc(2026, 8, 10, 12, 5),
+    requiredWaitingSeconds: requiredWaitingSeconds,
+    elapsedWaitingSeconds: elapsedWaitingSeconds,
+    remainingWaitingSeconds: remainingWaitingSeconds,
+    canReportNoShow: canReportNoShow,
+    startDistanceMeters: startDistanceMeters,
   );
 }
 
@@ -3071,6 +3581,98 @@ class _FakeRidesRepository extends DriverRidesRepository {
     }
 
     return next as DriverRideCompletion;
+  }
+
+  // ---------------------------------------------------------------------
+  // RideWaiting / Passenger No-show — Checkpoint G2
+  // ---------------------------------------------------------------------
+
+  int getRideWaitingCalls = 0;
+  int startRideWaitingCalls = 0;
+  int reportPassengerNoShowCalls = 0;
+
+  Completer<DriverRideWaiting?>? getRideWaitingGate;
+  Completer<DriverRideWaiting>? startRideWaitingGate;
+  Completer<void>? reportPassengerNoShowGate;
+
+  /// Elemento: [DriverRideWaiting] o `null` (sin espera activa) o
+  /// [DioException] (falla). `null` como lista completa (no
+  /// configurada) también equivale a "sin espera activa": la mayoría
+  /// de los tests de DRIVER_ARRIVED no les interesa el flujo de
+  /// espera y no deberían tener que configurarlo.
+  List<Object?>? getRideWaitingQueue;
+
+  /// Elemento: [DriverRideWaiting] (éxito) o [DioException] (falla).
+  List<Object>? startRideWaitingQueue;
+
+  /// `null` => éxito. [DioException] => se relanza tal cual.
+  Object? reportPassengerNoShowResult;
+
+  @override
+  Future<DriverRideWaiting?> getRideWaiting(String rideId) async {
+    getRideWaitingCalls++;
+
+    final gate = getRideWaitingGate;
+
+    if (gate != null) {
+      return gate.future;
+    }
+
+    final queue = getRideWaitingQueue;
+
+    if (queue == null || queue.isEmpty) {
+      return null;
+    }
+
+    final next = queue.length > 1 ? queue.removeAt(0) : queue.first;
+
+    if (next is DioException) {
+      throw next;
+    }
+
+    return next as DriverRideWaiting?;
+  }
+
+  @override
+  Future<DriverRideWaiting> startRideWaiting(String rideId) async {
+    startRideWaitingCalls++;
+
+    final gate = startRideWaitingGate;
+
+    if (gate != null) {
+      return gate.future;
+    }
+
+    final queue = startRideWaitingQueue;
+
+    if (queue == null || queue.isEmpty) {
+      throw StateError('startRideWaitingQueue no configurado en el fake');
+    }
+
+    final next = queue.length > 1 ? queue.removeAt(0) : queue.first;
+
+    if (next is DioException) {
+      throw next;
+    }
+
+    return next as DriverRideWaiting;
+  }
+
+  @override
+  Future<void> reportPassengerNoShow(String rideId) async {
+    reportPassengerNoShowCalls++;
+
+    final gate = reportPassengerNoShowGate;
+
+    if (gate != null) {
+      return gate.future;
+    }
+
+    final result = reportPassengerNoShowResult;
+
+    if (result is DioException) {
+      throw result;
+    }
   }
 }
 
