@@ -5,7 +5,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:go_router/go_router.dart';
-import 'package:google_maps_flutter/google_maps_flutter.dart' show LatLng;
+import 'package:google_maps_flutter/google_maps_flutter.dart'
+    show BitmapDescriptor, LatLng, Marker, MarkerId;
 
 import '../../../core/storage/secure_storage.dart';
 import '../../../core/theme/driver_palette.dart';
@@ -97,7 +98,16 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
   DriverDailyStats? _dailyStats;
   String? _errorMessage;
 
-  DriverRideOffer? _offer;
+  /// Todas las ofertas OFFERED activas devueltas por Backend, en el
+  /// orden que Backend ya entrega (cercanía primero). G4B1 conserva
+  /// la lista completa en vez de descartar todo salvo una "primary".
+  List<DriverRideOffer> _offers = const [];
+
+  /// Selección puramente de UI: no llama Backend, no cambia status,
+  /// no pone al Driver BUSY. Sobrevive mientras esa Offer siga en
+  /// `_offers`; si desaparece, se resuelve en `_resolveSelectedOfferId`.
+  String? _selectedOfferId;
+
   List<DriverPendingProposal> _pendingProposals = const [];
 
   String? _locationStatusMessage;
@@ -120,6 +130,25 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
   DriverMapCameraRequest? _cameraRequest;
   int _cameraRequestSequence = 0;
 
+  /// Tab de bottom navigation activo. Selección puramente local: no
+  /// crea routing nuevo, no duplica polling, no afecta el parent
+  /// (`_offers`/`_selectedOfferId`/lifecycle siguen viviendo acá
+  /// igual que antes, sin importar qué tab esté visible).
+  int _selectedTabIndex = 0;
+
+  /// Pedido de cámara declarativo del mapa de Solicitudes (A+B de la
+  /// Offer seleccionada), independiente de [_cameraRequest] (que
+  /// sigue siendo exclusivo del mapa de Inicio centrado en el
+  /// Driver). Solo se recalcula cuando la Offer seleccionada o sus
+  /// coordenadas realmente cambian — nunca en cada poll.
+  DriverMapCameraRequest? _offersCameraRequest;
+  int _offersCameraRequestSequence = 0;
+  String? _lastFramedOfferId;
+  double? _lastFramedOriginLat;
+  double? _lastFramedOriginLng;
+  double? _lastFramedDestinationLat;
+  double? _lastFramedDestinationLng;
+
   Timer? _heartbeatTimer;
   Timer? _offersTimer;
 
@@ -136,7 +165,13 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
   DriverHomeStatus get debugStatus => _status;
 
   @visibleForTesting
-  DriverRideOffer? get debugOffer => _offer;
+  DriverRideOffer? get debugOffer => _selectedOffer;
+
+  @visibleForTesting
+  List<DriverRideOffer> get debugOffers => _offers;
+
+  @visibleForTesting
+  String? get debugSelectedOfferId => _selectedOfferId;
 
   @visibleForTesting
   List<DriverPendingProposal> get debugPendingProposals => _pendingProposals;
@@ -171,6 +206,12 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
   /// necesitar (ni poder) acceder a un `GoogleMapController` real.
   @visibleForTesting
   DriverMapCameraRequest? get debugCameraRequest => _cameraRequest;
+
+  @visibleForTesting
+  int get debugSelectedTabIndex => _selectedTabIndex;
+
+  @visibleForTesting
+  DriverMapCameraRequest? get debugOffersCameraRequest => _offersCameraRequest;
 
   @override
   void initState() {
@@ -754,7 +795,8 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
       setState(() {
         _status = DriverHomeStatus.offline;
         _operationalState = state;
-        _offer = null;
+        _offers = const [];
+        _selectedOfferId = null;
         _pendingProposals = const [];
         _locationStatusMessage = null;
         _gpsStatus = DriverGpsStatus.unknown;
@@ -1192,7 +1234,8 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
               ? DriverHomeStatus.offline
               : DriverHomeStatus.error;
           _operationalState = state;
-          _offer = null;
+          _offers = const [];
+          _selectedOfferId = null;
           _pendingProposals = const [];
         });
 
@@ -1221,6 +1264,127 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
   // ---------------------------------------------------------------------
   // Offers & proposals
   // ---------------------------------------------------------------------
+
+  DriverRideOffer? _offerById(String id) {
+    for (final offer in _offers) {
+      if (offer.id == id) {
+        return offer;
+      }
+    }
+
+    return null;
+  }
+
+  /// Única fuente de verdad para la Offer seleccionada: se deriva de
+  /// `_selectedOfferId` + `_offers`, nunca se guarda por separado
+  /// (evita dos fuentes de verdad divergentes).
+  DriverRideOffer? get _selectedOffer {
+    final id = _selectedOfferId;
+
+    return id == null ? null : _offerById(id);
+  }
+
+  /// Toggle local, sin llamar Backend: no cambia status, no pone al
+  /// Driver BUSY, no rechaza/elimina la Offer. Tocar la ya
+  /// seleccionada la cierra (`_selectedOfferId = null`): todas las
+  /// tarjetas vuelven a compactas, el mapa de Solicitudes vuelve a
+  /// solo-Driver y los markers A/B desaparecen (se derivan de
+  /// `_selectedOffer`, que pasa a ser `null`).
+  void _selectOffer(String offerId) {
+    final closing = _selectedOfferId == offerId;
+
+    setState(() {
+      _selectedOfferId = closing ? null : offerId;
+
+      if (closing) {
+        _offersCameraRequest = null;
+        _lastFramedOfferId = null;
+      }
+    });
+
+    _maybeUpdateOffersCameraRequest();
+  }
+
+  /// Recalcula el pedido de cámara del mapa de Solicitudes SOLO si
+  /// la Offer seleccionada o sus coordenadas realmente cambiaron
+  /// desde el último encuadre — nunca en cada poll (Fase 20/25/33).
+  /// Sin selección o sin coordenadas válidas: no emite pedido nuevo,
+  /// nunca crashea.
+  void _maybeUpdateOffersCameraRequest() {
+    final offer = _selectedOffer;
+
+    if (offer == null || !offer.hasValidRouteCoordinates) {
+      return;
+    }
+
+    final originLat = offer.originLatitude!;
+    final originLng = offer.originLongitude!;
+    final destinationLat = offer.destinationLatitude!;
+    final destinationLng = offer.destinationLongitude!;
+
+    final sameOffer = offer.id == _lastFramedOfferId;
+    final sameCoordinates =
+        sameOffer &&
+        originLat == _lastFramedOriginLat &&
+        originLng == _lastFramedOriginLng &&
+        destinationLat == _lastFramedDestinationLat &&
+        destinationLng == _lastFramedDestinationLng;
+
+    if (sameCoordinates) {
+      return;
+    }
+
+    _lastFramedOfferId = offer.id;
+    _lastFramedOriginLat = originLat;
+    _lastFramedOriginLng = originLng;
+    _lastFramedDestinationLat = destinationLat;
+    _lastFramedDestinationLng = destinationLng;
+
+    setState(() {
+      _offersCameraRequest = DriverMapCameraRequest(
+        id: ++_offersCameraRequestSequence,
+        target: LatLng(originLat, originLng),
+        secondaryTarget: LatLng(destinationLat, destinationLng),
+      );
+    });
+  }
+
+  /// Decide la selección tras cada refresco de `_offers`:
+  /// - si la seleccionada actual sigue presente, se conserva
+  ///   (una nueva Offer entrando a la lista NUNCA la reemplaza);
+  /// - en cualquier otro caso (no había selección, o la que había
+  ///   desapareció) NO se autoselecciona ninguna. G4B-R2: las
+  ///   solicitudes llegan siempre compactas/cerradas; solo un tap
+  ///   explícito del Driver (`_selectOffer`) puede abrir una.
+  String? _resolveSelectedOfferId(List<DriverRideOffer> offers) {
+    final currentId = _selectedOfferId;
+
+    if (currentId != null && offers.any((offer) => offer.id == currentId)) {
+      return currentId;
+    }
+
+    return null;
+  }
+
+  /// Reconciliación defensiva antes de aplicar la respuesta de
+  /// `GET .../active` al state: el repository ya filtra por
+  /// `status == OFFERED` y preserva el orden de Backend
+  /// (`distanceToOriginMeters ASC, offeredAt ASC`), pero acá
+  /// deduplicamos por `id` (primera ocurrencia gana) como protección
+  /// adicional ante cualquier duplicado que pudiera llegar del
+  /// transporte, sin alterar el orden recibido.
+  List<DriverRideOffer> _reconcileOffers(List<DriverRideOffer> offers) {
+    final seenIds = <String>{};
+    final reconciled = <DriverRideOffer>[];
+
+    for (final offer in offers) {
+      if (seenIds.add(offer.id)) {
+        reconciled.add(offer);
+      }
+    }
+
+    return reconciled;
+  }
 
   Future<void> _loadOffers() async {
     if (_status != DriverHomeStatus.available ||
@@ -1265,7 +1429,8 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
         if (!_counterDialogOpen && !_navigatingToRide) {
           setState(() {
             _pendingProposals = proposals;
-            _offer = null;
+            _offers = const [];
+            _selectedOfferId = null;
           });
         }
 
@@ -1286,9 +1451,31 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
         return;
       }
 
-      final offers = await ref
-          .read(driverOffersRepositoryProvider)
-          .getActiveOffers();
+      /*
+       * Fetch de active offers AISLADO en su propio try/catch: un
+       * error transitorio (timeout/socket/500/503) acá NUNCA debe
+       * convertirse en `_offers = []` si ya existía una lista
+       * válida — solo una respuesta 200 real (incluso si es `[]`)
+       * puede representar "cero Offers reales". Las reglas de
+       * 401/403/sesión inválida se preservan igual que antes.
+       */
+      List<DriverRideOffer> offers;
+
+      try {
+        offers = await ref.read(driverOffersRepositoryProvider).getActiveOffers();
+      } on DioException catch (offersError) {
+        debugPrint(
+          'DRIVER OFFERS ERROR (transitorio, se preserva la lista actual '
+          'de ${_offers.length}) '
+          'status=${offersError.response?.statusCode} '
+          'type=${offersError.type} '
+          'message=${offersError.message}',
+        );
+
+        await _handleSessionInvalidatedIfNeeded();
+
+        return;
+      }
 
       debugPrint('DRIVER OFFERS OK - cantidad=${offers.length}');
 
@@ -1296,9 +1483,14 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
         return;
       }
 
+      final reconciled = _reconcileOffers(offers);
+
       setState(() {
-        _offer = offers.isEmpty ? null : offers.first;
+        _offers = reconciled;
+        _selectedOfferId = _resolveSelectedOfferId(reconciled);
       });
+
+      _maybeUpdateOffersCameraRequest();
     } on DioException catch (error) {
       debugPrint(
         'DRIVER OFFERS ERROR '
@@ -1336,7 +1528,7 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
   }
 
   Future<void> _acceptOffer() async {
-    final offer = _offer;
+    final offer = _selectedOffer;
 
     if (offer == null || _accepting || _navigatingToRide) {
       return;
@@ -1345,6 +1537,16 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
     setState(() {
       _accepting = true;
     });
+
+    /*
+     * Fase 16 (G4B2): mismo patrón seguro ya aplicado en reject y
+     * counterOffer. `_loadOffers()` se autobloquea mientras
+     * `_accepting` siga en true, así que llamarlo dentro del propio
+     * try/catch —antes de que el finally lo resetee— era un no-op
+     * silencioso. El reload real se decide acá y se dispara DESPUÉS
+     * del finally.
+     */
+    var reloadOffers = false;
 
     try {
       debugPrint('DRIVER OFFER PROPOSAL - enviando...');
@@ -1360,7 +1562,8 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
       }
 
       setState(() {
-        _offer = null;
+        _offers = const [];
+        _selectedOfferId = null;
         _pendingProposals = [
           _proposalFromOffer(proposed, fallbackFare: offer.passengerOfferFare),
         ];
@@ -1394,7 +1597,7 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
 
       _showMessage(message);
 
-      await _loadOffers();
+      reloadOffers = true;
     } finally {
       if (mounted && !_navigatingToRide && !_sessionInvalidHandled) {
         setState(() {
@@ -1402,10 +1605,14 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
         });
       }
     }
+
+    if (reloadOffers && mounted && !_navigatingToRide) {
+      await _loadOffers();
+    }
   }
 
   Future<void> _counterOffer() async {
-    final offer = _offer;
+    final offer = _selectedOffer;
 
     if (offer == null ||
         offer.status != 'OFFERED' ||
@@ -1440,10 +1647,15 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
       return;
     }
 
-    final currentOffer = _offer;
+    /*
+     * Re-validamos por id (no por "lo que esté seleccionado ahora"):
+     * un poll pudo haber corrido mientras el diálogo estaba abierto
+     * y no debe cambiar silenciosamente sobre qué Offer se envía la
+     * contraoferta.
+     */
+    final currentOffer = _offerById(offer.id);
 
     if (currentOffer == null ||
-        currentOffer.id != offer.id ||
         currentOffer.status != 'OFFERED' ||
         _accepting ||
         _navigatingToRide) {
@@ -1476,7 +1688,8 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
       }
 
       setState(() {
-        _offer = null;
+        _offers = const [];
+        _selectedOfferId = null;
         _pendingProposals = [
           _proposalFromOffer(proposed, fallbackFare: proposedFare),
         ];
@@ -1502,10 +1715,15 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
 
       if (statusCode == 409) {
         setState(() {
-          if (_offer?.id == offer.id) {
-            _offer = null;
-          }
+          final remaining = _offers
+              .where((candidate) => candidate.id != offer.id)
+              .toList();
+
+          _offers = remaining;
+          _selectedOfferId = _resolveSelectedOfferId(remaining);
         });
+
+        _maybeUpdateOffersCameraRequest();
       }
 
       _showMessage(
@@ -1530,7 +1748,7 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
   }
 
   Future<void> _rejectOffer() async {
-    final offer = _offer;
+    final offer = _selectedOffer;
 
     if (offer == null || _accepting || _navigatingToRide) {
       return;
@@ -1540,6 +1758,15 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
       _accepting = true;
     });
 
+    /*
+     * El refresco real se dispara DESPUÉS del finally (igual que
+     * `_counterOffer`), nunca dentro del try/catch: `_loadOffers()`
+     * se autobloquea mientras `_accepting` siga en true, así que
+     * llamarlo antes de que el finally lo resetee sería un no-op
+     * silencioso.
+     */
+    var reloadOffers = false;
+
     try {
       await ref.read(driverOffersRepositoryProvider).rejectOffer(offer.id);
 
@@ -1548,12 +1775,19 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
       }
 
       setState(() {
-        _offer = null;
+        final remaining = _offers
+            .where((candidate) => candidate.id != offer.id)
+            .toList();
+
+        _offers = remaining;
+        _selectedOfferId = _resolveSelectedOfferId(remaining);
       });
+
+      _maybeUpdateOffersCameraRequest();
 
       _showMessage('Solicitud rechazada.');
 
-      await _loadOffers();
+      reloadOffers = true;
     } on DioException catch (error) {
       debugPrint(
         'DRIVER OFFER REJECT ERROR '
@@ -1580,12 +1814,21 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
       }
 
       _showMessage(message);
+
+      // Fase 16: corrige la asimetría detectada en G4A-AUDIT — accept
+      // y counterOffer ya refrescaban el mailbox en su path de error;
+      // reject no lo hacía y podía dejar una tarjeta stale.
+      reloadOffers = true;
     } finally {
       if (mounted && !_navigatingToRide && !_sessionInvalidHandled) {
         setState(() {
           _accepting = false;
         });
       }
+    }
+
+    if (reloadOffers && mounted && !_navigatingToRide) {
+      await _loadOffers();
     }
   }
 
@@ -1836,25 +2079,13 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
     return hours > 0 ? '${hours}h ${minutes}m' : '${minutes}m';
   }
 
-  String _gpsStatusLabel() {
-    switch (_effectiveGpsStatus) {
-      case DriverGpsStatus.active:
-        return 'Ubicación GPS activa';
-      case DriverGpsStatus.stale:
-        return 'Ubicación GPS desactualizada';
-      default:
-        return 'Obteniendo ubicación...';
-    }
-  }
-
-  /// "Ubicación GPS activa" solo cuando hay una Position real y
-  /// fresh, y no hay ningún problema conocido (serviceDisabled,
-  /// permission denied/forever, acquire/publish error).
-  bool get _gpsPillActive =>
-      _lastPosition != null && _effectiveGpsStatus == DriverGpsStatus.active;
-
+  /// Diagnóstico real (Android/iOS precise vs reduced), independiente
+  /// del antiguo pill "Ubicación GPS activa" (eliminado en G4B2):
+  /// esta señal no es decorativa, informa un problema real de
+  /// precisión que puede afectar el matching.
   bool get _showReducedAccuracyHint =>
-      _gpsPillActive &&
+      _lastPosition != null &&
+      _effectiveGpsStatus == DriverGpsStatus.active &&
       _locationAccuracyStatus == LocationAccuracyStatus.reduced;
 
   /// Igual que Passenger: el punto azul nativo solo se activa cuando
@@ -1884,8 +2115,22 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
   /// pintura y dejar un hueco.
   static const double _sheetOverlap = 20;
 
+  /// G4B2: el status `available` tiene su propio Scaffold con bottom
+  /// navigation (Inicio/Solicitudes/Ingresos/Perfil); el resto de
+  /// estados (restoring/error/busyRecovery/offline) siguen
+  /// exactamente con el Scaffold original de un único mapa+sheet, sin
+  /// tabs — son estados transicionales/de recuperación que no deben
+  /// mezclarse con la navegación nueva.
   @override
   Widget build(BuildContext context) {
+    if (_status == DriverHomeStatus.available) {
+      return _buildTabbedScaffold();
+    }
+
+    return _buildLegacyScaffold();
+  }
+
+  Widget _buildLegacyScaffold() {
     return Scaffold(
       backgroundColor: DriverPalette.cream,
       body: SafeArea(
@@ -2035,14 +2280,468 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
       case DriverHomeStatus.offline:
         return _sheetShell(_buildOfflineSheet());
       case DriverHomeStatus.available:
-        if (_offer != null) {
-          return _sheetShell(_buildOfferSheet(_offer!));
-        }
-        if (_pendingProposals.isNotEmpty) {
-          return _sheetShell(_buildProposalsSheet());
-        }
-        return _sheetShell(_buildAvailableSheet());
+        // Inalcanzable: `build()` enruta `available` a
+        // `_buildTabbedScaffold()` antes de llegar acá. Se conserva
+        // el case solo por exhaustividad del switch sobre el enum.
+        return const SizedBox.shrink();
     }
+  }
+
+  // ---------------------------------------------------------------------
+  // G4B2: Scaffold con bottom navigation (solo status == available)
+  // ---------------------------------------------------------------------
+
+  Widget _buildTabbedScaffold() {
+    return Scaffold(
+      backgroundColor: DriverPalette.cream,
+      body: SafeArea(
+        bottom: false,
+        child: Column(
+          children: [
+            _buildHeader(),
+            Expanded(child: _buildTabBody()),
+          ],
+        ),
+      ),
+      bottomNavigationBar: _buildBottomNav(),
+    );
+  }
+
+  Widget _buildTabBody() {
+    switch (_selectedTabIndex) {
+      case 0:
+        return _buildInicioTab();
+      case 1:
+        return _buildSolicitudesTab();
+      case 2:
+        return _buildComingSoonTab(
+          key: const ValueKey('driver-tab-ingresos'),
+          icon: Icons.payments_outlined,
+          title: 'Ingresos',
+        );
+      case 3:
+      default:
+        return _buildComingSoonTab(
+          key: const ValueKey('driver-tab-perfil'),
+          icon: Icons.person_outline,
+          title: 'Perfil',
+        );
+    }
+  }
+
+  Widget _buildBottomNav() {
+    final offersCount = _offers.length;
+
+    return NavigationBar(
+      key: const ValueKey('driver-bottom-nav'),
+      selectedIndex: _selectedTabIndex,
+      backgroundColor: DriverPalette.cream,
+      indicatorColor: DriverPalette.amberLight.withValues(alpha: 0.55),
+      onDestinationSelected: (index) {
+        if (index == _selectedTabIndex) {
+          return;
+        }
+
+        setState(() {
+          _selectedTabIndex = index;
+        });
+
+        if (index == 1) {
+          _maybeUpdateOffersCameraRequest();
+        }
+      },
+      destinations: [
+        const NavigationDestination(
+          icon: Icon(Icons.home_outlined),
+          selectedIcon: Icon(Icons.home),
+          label: 'Inicio',
+        ),
+        NavigationDestination(
+          icon: _buildSolicitudesIcon(
+            offersCount: offersCount,
+            selected: false,
+          ),
+          selectedIcon: _buildSolicitudesIcon(
+            offersCount: offersCount,
+            selected: true,
+          ),
+          label: 'Solicitudes',
+        ),
+        const NavigationDestination(
+          icon: Icon(Icons.payments_outlined),
+          selectedIcon: Icon(Icons.payments),
+          label: 'Ingresos',
+        ),
+        const NavigationDestination(
+          icon: Icon(Icons.person_outline),
+          selectedIcon: Icon(Icons.person),
+          label: 'Perfil',
+        ),
+      ],
+    );
+  }
+
+  /// Badge con el conteo REAL de `_offers.length` — nunca inventado.
+  /// `Badge` es un widget de Material estándar: no agrega dependencia
+  /// nueva.
+  Widget _buildSolicitudesIcon({
+    required int offersCount,
+    required bool selected,
+  }) {
+    final icon = Icon(selected ? Icons.list_alt : Icons.list_alt_outlined);
+
+    if (offersCount <= 0) {
+      return icon;
+    }
+
+    return Badge(
+      label: Text('$offersCount'),
+      child: icon,
+    );
+  }
+
+  Widget _buildComingSoonTab({
+    required Key key,
+    required IconData icon,
+    required String title,
+  }) {
+    return Center(
+      key: key,
+      child: Padding(
+        padding: const EdgeInsets.all(32),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              icon,
+              size: 48,
+              color: DriverPalette.greenPrimary.withValues(alpha: 0.35),
+            ),
+            const SizedBox(height: 16),
+            Text(
+              title,
+              style: const TextStyle(
+                fontSize: 20,
+                fontWeight: FontWeight.w800,
+                color: DriverPalette.greenPrimary,
+              ),
+            ),
+            const SizedBox(height: 8),
+            const Text(
+              'Esta sección estará disponible próximamente.',
+              textAlign: TextAlign.center,
+              style: TextStyle(color: DriverPalette.brown),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ---------------------------------------------------------------------
+  // G4B2: Tab Inicio
+  // ---------------------------------------------------------------------
+
+  Widget _buildInicioTab() {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final mapHeight = _mapAreaHeight(constraints.maxHeight);
+
+        return Stack(
+          children: [
+            Positioned(
+              top: 0,
+              left: 0,
+              right: 0,
+              height: mapHeight,
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  Positioned.fill(
+                    child: DriverHomeMap(
+                      position: _lastPosition,
+                      myLocationEnabled: _myLocationSafe,
+                      fallback: _mapFallback,
+                      cameraRequest: _cameraRequest,
+                    ),
+                  ),
+                  if (_showRecenterButton)
+                    Positioned(
+                      top: 14,
+                      right: 16,
+                      child: _buildRecenterButton(),
+                    ),
+                ],
+              ),
+            ),
+            Positioned(
+              top: mapHeight - _sheetOverlap,
+              left: 0,
+              right: 0,
+              bottom: 0,
+              child: _sheetShell(_buildInicioPanel()),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  /// TAB INICIO (G4B2): sin ilustración, sin "¡Estás disponible!",
+  /// sin "Esperando solicitudes de viaje", sin el pill "Ubicación GPS
+  /// activa" — solo el estado operativo real, las 3 stats, el tip y
+  /// Desconectarme. El mailbox de Offers vive exclusivamente en la
+  /// tab Solicitudes (Fase 11).
+  Widget _buildInicioPanel() {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _buildOperationalStatusPill(),
+        if (_showReducedAccuracyHint) ...[
+          const SizedBox(height: 6),
+          Text(
+            'Activa la ubicación precisa para mejorar tu posición',
+            style: TextStyle(
+              fontSize: 11,
+              color: DriverPalette.brown.withValues(alpha: 0.8),
+            ),
+          ),
+        ],
+        const SizedBox(height: 16),
+        _buildStatsRow(includeOnlineDuration: true),
+        const SizedBox(height: 14),
+        _buildTip(),
+        if (_locationStatusMessage != null) ...[
+          const SizedBox(height: 14),
+          _buildLocationWarning(),
+        ],
+        const SizedBox(height: 18),
+        SizedBox(
+          width: double.infinity,
+          child: OutlinedButton.icon(
+            onPressed: _loading ? null : _goOffline,
+            style: OutlinedButton.styleFrom(
+              foregroundColor: DriverPalette.coral,
+              side: const BorderSide(color: DriverPalette.coral),
+            ),
+            icon: _loading
+                ? const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.power_settings_new),
+            label: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 14),
+              child: Text(_loading ? 'Desconectando...' : 'Desconectarme'),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  /// Estado operativo real (`_status == available`, garantizado por
+  /// el gate en `build()`), no un texto decorativo inventado.
+  Widget _buildOperationalStatusPill() {
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        decoration: BoxDecoration(
+          color: DriverPalette.greenAvailable.withValues(alpha: 0.12),
+          borderRadius: BorderRadius.circular(999),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 8,
+              height: 8,
+              decoration: const BoxDecoration(
+                color: DriverPalette.greenAvailable,
+                shape: BoxShape.circle,
+              ),
+            ),
+            const SizedBox(width: 8),
+            const Text(
+              'Disponible',
+              style: TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w700,
+                color: DriverPalette.greenAvailable,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ---------------------------------------------------------------------
+  // G4B2: Tab Solicitudes
+  // ---------------------------------------------------------------------
+
+  double _solicitudesMapHeight(double availableHeight) =>
+      (availableHeight * 0.28).clamp(140.0, 220.0);
+
+  Widget _buildSolicitudesTab() {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final mapHeight = _solicitudesMapHeight(constraints.maxHeight);
+
+        return Column(
+          children: [
+            SizedBox(height: mapHeight, child: _buildSolicitudesMap()),
+            Expanded(
+              child: Container(
+                width: double.infinity,
+                decoration: const BoxDecoration(
+                  color: DriverPalette.cream,
+                  borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black26,
+                      blurRadius: 18,
+                      offset: Offset(0, -4),
+                    ),
+                  ],
+                ),
+                child: _buildSolicitudesBody(),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  /// Mapa compacto de la tab Solicitudes: blue dot nativo del Driver
+  /// + markers A/B (verde/naranja) de la Offer seleccionada,
+  /// reutilizando el mismo lenguaje visual que
+  /// `DriverActiveRideScreen._rideMarkers()`. Sin coordenadas
+  /// válidas: sin markers, sin crash (Fase 18/33). Sin polyline.
+  Widget _buildSolicitudesMap() {
+    final offer = _selectedOffer;
+    final markers = <Marker>{};
+
+    if (offer != null && offer.hasValidRouteCoordinates) {
+      markers.add(
+        Marker(
+          markerId: const MarkerId('solicitud-origin'),
+          position: LatLng(offer.originLatitude!, offer.originLongitude!),
+          icon: BitmapDescriptor.defaultMarkerWithHue(
+            BitmapDescriptor.hueGreen,
+          ),
+        ),
+      );
+      markers.add(
+        Marker(
+          markerId: const MarkerId('solicitud-destination'),
+          position: LatLng(
+            offer.destinationLatitude!,
+            offer.destinationLongitude!,
+          ),
+          icon: BitmapDescriptor.defaultMarkerWithHue(
+            BitmapDescriptor.hueOrange,
+          ),
+        ),
+      );
+    }
+
+    return DriverHomeMap(
+      position: _lastPosition,
+      myLocationEnabled: _myLocationSafe,
+      fallback: _mapFallback,
+      cameraRequest: _offersCameraRequest,
+      markers: markers,
+    );
+  }
+
+  Widget _buildSolicitudesBody() {
+    if (_offers.isNotEmpty) {
+      return _buildSolicitudesListBody();
+    }
+
+    if (_pendingProposals.isNotEmpty) {
+      return SingleChildScrollView(
+        padding: const EdgeInsets.fromLTRB(20, 18, 20, 18),
+        child: _buildProposalsSheet(),
+      );
+    }
+
+    return _buildSolicitudesEmptyState();
+  }
+
+  /// Único scroll real de la lista (Fase 12): `Expanded` +
+  /// `ListView.builder` SIN `shrinkWrap` ni envoltorio en
+  /// `SingleChildScrollView` — con 50 Offers solo se construyen los
+  /// items del viewport + cache razonable, no las 50 de una.
+  Widget _buildSolicitudesListBody() {
+    final offers = _offers;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(20, 18, 20, 12),
+          child: _buildOffersHeader(offers.length),
+        ),
+        Expanded(
+          child: ListView.builder(
+            key: const ValueKey('driver-offers-list'),
+            padding: const EdgeInsets.fromLTRB(20, 0, 20, 18),
+            itemCount: offers.length,
+            itemBuilder: (context, index) {
+              final offer = offers[index];
+              final selected = offer.id == _selectedOfferId;
+
+              return Padding(
+                padding: EdgeInsets.only(
+                  bottom: index == offers.length - 1 ? 0 : 10,
+                ),
+                child: _buildOfferCard(offer, selected: selected),
+              );
+            },
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildSolicitudesEmptyState() {
+    return Padding(
+      padding: const EdgeInsets.all(24),
+      child: Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              Icons.inbox_outlined,
+              size: 40,
+              color: DriverPalette.greenPrimary.withValues(alpha: 0.4),
+            ),
+            const SizedBox(height: 12),
+            const Text(
+              'Sin solicitudes por ahora',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontSize: 17,
+                fontWeight: FontWeight.w800,
+                color: DriverPalette.greenPrimary,
+              ),
+            ),
+            const SizedBox(height: 6),
+            const Text(
+              'Te avisaremos apenas llegue una nueva.',
+              textAlign: TextAlign.center,
+              style: TextStyle(color: DriverPalette.brown),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   /// El sheet vive en su PROPIA región física (un [Positioned] con
@@ -2273,76 +2972,6 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
     );
   }
 
-  Widget _buildAvailableSheet() {
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        const _StatusIconCircle(
-          color: DriverPalette.greenAvailable,
-          icon: Icons.check,
-        ),
-        const SizedBox(height: 14),
-        const Text(
-          'Estás disponible',
-          textAlign: TextAlign.center,
-          style: TextStyle(
-            fontSize: 20,
-            fontWeight: FontWeight.w800,
-            color: DriverPalette.greenPrimary,
-          ),
-        ),
-        const SizedBox(height: 6),
-        const Text(
-          'Esperando solicitudes de viaje',
-          textAlign: TextAlign.center,
-          style: TextStyle(color: DriverPalette.brown),
-        ),
-        if (_gpsPillActive) ...[const SizedBox(height: 10), _buildGpsPill()],
-        if (_showReducedAccuracyHint) ...[
-          const SizedBox(height: 6),
-          Text(
-            'Activa la ubicación precisa para mejorar tu posición',
-            textAlign: TextAlign.center,
-            style: TextStyle(
-              fontSize: 11,
-              color: DriverPalette.brown.withValues(alpha: 0.8),
-            ),
-          ),
-        ],
-        const SizedBox(height: 16),
-        _buildStatsRow(includeOnlineDuration: true),
-        const SizedBox(height: 14),
-        _buildTip(),
-        if (_locationStatusMessage != null) ...[
-          const SizedBox(height: 14),
-          _buildLocationWarning(),
-        ],
-        const SizedBox(height: 18),
-        SizedBox(
-          width: double.infinity,
-          child: OutlinedButton.icon(
-            onPressed: _loading ? null : _goOffline,
-            style: OutlinedButton.styleFrom(
-              foregroundColor: DriverPalette.coral,
-              side: const BorderSide(color: DriverPalette.coral),
-            ),
-            icon: _loading
-                ? const SizedBox(
-                    width: 18,
-                    height: 18,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
-                : const Icon(Icons.power_settings_new),
-            label: Padding(
-              padding: const EdgeInsets.symmetric(vertical: 14),
-              child: Text(_loading ? 'Desconectando...' : 'Desconectarme'),
-            ),
-          ),
-        ),
-      ],
-    );
-  }
-
   Widget _buildStatsRow({required bool includeOnlineDuration}) {
     final cards = <Widget>[
       Expanded(
@@ -2364,35 +2993,6 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
     }
 
     return Row(children: cards);
-  }
-
-  Widget _buildGpsPill() {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-      decoration: BoxDecoration(
-        color: DriverPalette.greenAvailable.withValues(alpha: 0.12),
-        borderRadius: BorderRadius.circular(999),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          const Icon(
-            Icons.location_on,
-            size: 14,
-            color: DriverPalette.greenAvailable,
-          ),
-          const SizedBox(width: 6),
-          Text(
-            _gpsStatusLabel(),
-            style: const TextStyle(
-              fontSize: 12,
-              fontWeight: FontWeight.w600,
-              color: DriverPalette.greenAvailable,
-            ),
-          ),
-        ],
-      ),
-    );
   }
 
   Widget _buildTip() {
@@ -2533,110 +3133,223 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
     );
   }
 
-  Widget _buildOfferSheet(DriverRideOffer offer) {
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      crossAxisAlignment: CrossAxisAlignment.stretch,
+  Widget _buildOffersHeader(int count) {
+    return Row(
       children: [
-        const Center(
-          child: Icon(
-            Icons.notifications_active,
-            size: 44,
-            color: DriverPalette.orange,
+        const Expanded(
+          child: Text(
+            'Solicitudes',
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              fontSize: 18,
+              fontWeight: FontWeight.w800,
+              color: DriverPalette.greenPrimary,
+            ),
           ),
         ),
-        const SizedBox(height: 10),
-        const Text(
-          '¡Nueva solicitud!',
-          textAlign: TextAlign.center,
-          style: TextStyle(
-            fontSize: 22,
-            fontWeight: FontWeight.w800,
-            color: DriverPalette.greenPrimary,
-          ),
-        ),
-        const SizedBox(height: 4),
-        const Text(
-          'Precio recomendado TukiTuki',
-          textAlign: TextAlign.center,
-          style: TextStyle(color: DriverPalette.brown),
-        ),
-        const SizedBox(height: 2),
-        Text(
-          'S/ ${offer.estimatedFare}',
-          textAlign: TextAlign.center,
-          style: const TextStyle(
-            fontSize: 18,
-            fontWeight: FontWeight.w700,
-            color: DriverPalette.greenPrimary,
-          ),
-        ),
-        const SizedBox(height: 14),
+        const SizedBox(width: 8),
         Container(
-          width: double.infinity,
-          padding: const EdgeInsets.all(16),
+          padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 3),
           decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(16),
+            color: DriverPalette.amberLight.withValues(alpha: 0.6),
+            borderRadius: BorderRadius.circular(999),
           ),
-          child: Column(
+          child: Text(
+            '$count',
+            style: const TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w800,
+              color: DriverPalette.greenPrimary,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  /// El toggle de expandir/cerrar SOLO vive en el header (nombre/
+  /// distancia + fare + chevron): direcciones y acciones quedan
+  /// fuera de ese `InkWell` a propósito (Fase 10) para que tocar
+  /// Aceptar/Contraoferta/Rechazar nunca compita con el gesto de
+  /// colapsar la tarjeta.
+  Widget _buildOfferCard(DriverRideOffer offer, {required bool selected}) {
+    final chevron = Icon(
+      selected ? Icons.expand_less : Icons.expand_more,
+      color: DriverPalette.brown.withValues(alpha: 0.6),
+    );
+
+    final header = offer.passengerFirstName != null
+        ? Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Text(
-                'El pasajero ofrece',
-                style: TextStyle(color: DriverPalette.brown),
+              Expanded(
+                child: Text(
+                  offer.passengerFirstName!,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.w700,
+                    color: DriverPalette.greenPrimary,
+                  ),
+                ),
               ),
-              const SizedBox(height: 4),
+              const SizedBox(width: 8),
               Text(
                 'S/ ${offer.passengerOfferFare}',
                 style: const TextStyle(
-                  fontSize: 30,
+                  fontSize: 20,
                   fontWeight: FontWeight.w800,
                   color: DriverPalette.greenPrimary,
                 ),
               ),
+              const SizedBox(width: 4),
+              chevron,
             ],
-          ),
-        ),
-        const SizedBox(height: 14),
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 8),
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(16),
-          ),
-          child: Column(
+          )
+        : Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              ListTile(
-                dense: true,
-                leading: const Icon(
-                  Icons.my_location,
-                  color: DriverPalette.greenAvailable,
+              Text(
+                '${(offer.distanceToOriginMeters / 1000).toStringAsFixed(1)} km',
+                style: const TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                  color: DriverPalette.brown,
                 ),
-                title: const Text('Recoger en'),
-                subtitle: Text(offer.originAddress),
               ),
-              const Divider(height: 1),
-              ListTile(
-                dense: true,
-                leading: const Icon(
-                  Icons.location_on,
-                  color: DriverPalette.orange,
+              const Spacer(),
+              Text(
+                'S/ ${offer.passengerOfferFare}',
+                style: const TextStyle(
+                  fontSize: 20,
+                  fontWeight: FontWeight.w800,
+                  color: DriverPalette.greenPrimary,
                 ),
-                title: const Text('Destino'),
-                subtitle: Text(offer.destinationAddress),
               ),
+              const SizedBox(width: 4),
+              chevron,
             ],
+          );
+
+    return Material(
+      key: ValueKey('driver-offer-card-${offer.id}'),
+      color: Colors.transparent,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 150),
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: selected
+              ? DriverPalette.amberLight.withValues(alpha: 0.28)
+              : Colors.white,
+          borderRadius: BorderRadius.circular(18),
+          border: Border.all(
+            color: selected
+                ? DriverPalette.greenPrimary
+                : Colors.black.withValues(alpha: 0.06),
+            width: selected ? 1.6 : 1,
           ),
         ),
-        const SizedBox(height: 10),
-        Text(
-          'Estás a '
-          '${(offer.distanceToOriginMeters / 1000).toStringAsFixed(1)} km '
-          'del pasajero',
-          textAlign: TextAlign.center,
-          style: const TextStyle(color: DriverPalette.brown),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Material(
+              key: ValueKey('driver-offer-card-toggle-${offer.id}'),
+              color: Colors.transparent,
+              child: InkWell(
+                borderRadius: BorderRadius.circular(12),
+                onTap: () => _selectOffer(offer.id),
+                child: header,
+              ),
+            ),
+            if (offer.passengerFirstName != null) ...[
+              const SizedBox(height: 2),
+              Text(
+                '${(offer.distanceToOriginMeters / 1000).toStringAsFixed(1)} km',
+                style: const TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                  color: DriverPalette.brown,
+                ),
+              ),
+            ],
+            const SizedBox(height: 10),
+            _buildOfferAddressRow(
+              letter: 'A',
+              color: DriverPalette.greenAvailable,
+              address: offer.originAddress,
+            ),
+            const SizedBox(height: 6),
+            _buildOfferAddressRow(
+              letter: 'B',
+              color: DriverPalette.orange,
+              address: offer.destinationAddress,
+            ),
+            if (selected) ...[
+              const SizedBox(height: 14),
+              _buildOfferActions(),
+            ],
+          ],
         ),
-        const SizedBox(height: 16),
+      ),
+    );
+  }
+
+  Widget _buildOfferAddressRow({
+    required String letter,
+    required Color color,
+    required String address,
+  }) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Container(
+          width: 18,
+          height: 18,
+          alignment: Alignment.center,
+          decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+          child: Text(
+            letter,
+            style: const TextStyle(
+              fontSize: 10,
+              fontWeight: FontWeight.w800,
+              color: Colors.white,
+            ),
+          ),
+        ),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Text(
+            address,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(
+              fontSize: 13,
+              color: DriverPalette.greenPrimary,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  /// Acciones de la Offer seleccionada. Siempre operan sobre
+  /// `_selectedOffer` (no reciben la Offer por parámetro) para que un
+  /// poll concurrente nunca dispare una acción sobre una referencia
+  /// obsoleta: `_acceptOffer`/`_counterOffer`/`_rejectOffer` releen
+  /// `_selectedOffer` en el momento en que el usuario realmente toca
+  /// el botón.
+  Widget _buildOfferActions() {
+    final offer = _selectedOffer;
+
+    if (offer == null) {
+      return const SizedBox.shrink();
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
         FilledButton.icon(
           onPressed: _accepting ? null : _acceptOffer,
           style: FilledButton.styleFrom(

@@ -39,8 +39,10 @@ class DriverOffersRepository {
       }
     }
 
-    offers.sort((a, b) => a.expiresAt.compareTo(b.expiresAt));
-
+    // Preservamos el orden que ya entrega Backend
+    // (distanceToOriginMeters ASC, offeredAt ASC como desempate):
+    // reordenar acá por expiresAt rompería la priorización por
+    // cercanía que la lista compacta del Driver depende de mostrar.
     return offers;
   }
 

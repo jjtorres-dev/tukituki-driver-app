@@ -327,7 +327,7 @@ void main() {
       );
       await tester.pump();
 
-      expect(find.text('Estás disponible'), findsOneWidget);
+      expect(find.text('Disponible'), findsOneWidget);
 
       final dynamic state = tester.state(find.byType(DriverHomeScreen));
       expect(state.debugOperationalState.connectedAt, connectedAt);
@@ -470,7 +470,7 @@ void main() {
     );
     await tester.pump();
 
-    expect(find.text('Estás disponible'), findsOneWidget);
+    expect(find.text('Disponible'), findsOneWidget);
 
     final dynamic state = tester.state(find.byType(DriverHomeScreen));
     expect(state.debugPendingProposals, isEmpty);
@@ -500,6 +500,7 @@ void main() {
         offers: offers,
       );
       await tester.pump();
+      await _openSolicitudesTab(tester);
 
       expect(find.text('Propuesta enviada'), findsOneWidget);
 
@@ -535,6 +536,7 @@ void main() {
       offers: offers,
     );
     await tester.pump();
+    await _openSolicitudesTab(tester);
 
     expect(find.text('Propuestas pendientes (2)'), findsOneWidget);
 
@@ -572,7 +574,7 @@ void main() {
       );
       await tester.pump();
 
-      expect(find.text('Estás disponible'), findsOneWidget);
+      expect(find.text('Disponible'), findsOneWidget);
 
       await tester.pump(const Duration(seconds: 3));
       await tester.pump();
@@ -605,11 +607,1417 @@ void main() {
     );
     await tester.pump();
 
-    expect(find.text('¡Nueva solicitud!'), findsOneWidget);
+    await _openSolicitudesTab(tester);
 
     final dynamic state = tester.state(find.byType(DriverHomeScreen));
-    expect(state.debugOffer, isNotNull);
+    // G4B-R2: sin tap explícito no hay selección automática; lo que
+    // separa OFFERED de PROPOSED es que `_offers` esté poblado.
+    expect(state.debugOffers, isNotEmpty);
+    expect(state.debugSelectedOfferId, isNull);
     expect(state.debugPendingProposals, isEmpty);
+  });
+
+  group('G4B1: lista compacta de múltiples solicitudes + selección local', () {
+    testWidgets(
+      'A: 1 Offer se conserva en la lista pero permanece compacta/cerrada por defecto (G4B-R2: sin auto-selección)',
+      (tester) async {
+        final rides = _FakeRidesRepository();
+        final operations = _FakeOperationsRepository(
+          statusQueue: [
+            const DriverOperationalState(
+              status: DriverOperationalStatus.available,
+            ),
+          ],
+        );
+        final offers = _FakeOffersRepository(
+          pendingProposalsQueue: [const <DriverPendingProposal>[]],
+          activeOffersQueue: [
+            [_offerFixture(id: 'offer-1')],
+          ],
+        );
+
+        await _pumpHome(
+          tester,
+          rides: rides,
+          operations: operations,
+          offers: offers,
+        );
+        await tester.pump();
+        await _openSolicitudesTab(tester);
+
+        final dynamic state = tester.state(find.byType(DriverHomeScreen));
+        expect(state.debugOffers, hasLength(1));
+        // G4B-R2: ninguna Offer se abre sola, ni siquiera siendo la única.
+        expect(state.debugSelectedOfferId, isNull);
+        expect(
+          find.byKey(const ValueKey('driver-offer-card-offer-1')),
+          findsOneWidget,
+        );
+        // Compacta: sin acciones visibles hasta un tap explícito.
+        expect(find.text('Hacer contraoferta'), findsNothing);
+      },
+    );
+
+    testWidgets(
+      'B: 5 Offers quedan todas en state, ninguna seleccionada por defecto, todas alcanzables por scroll',
+      (tester) async {
+        final rides = _FakeRidesRepository();
+        final operations = _FakeOperationsRepository(
+          statusQueue: [
+            const DriverOperationalState(
+              status: DriverOperationalStatus.available,
+            ),
+          ],
+        );
+        final fiveOffers = List.generate(
+          5,
+          (index) => _offerFixture(
+            id: 'offer-${index + 1}',
+            distanceToOriginMeters: (index + 1) * 200,
+          ),
+        );
+        final offers = _FakeOffersRepository(
+          pendingProposalsQueue: [const <DriverPendingProposal>[]],
+          activeOffersQueue: [fiveOffers],
+        );
+
+        await _pumpHome(
+          tester,
+          rides: rides,
+          operations: operations,
+          offers: offers,
+        );
+        await tester.pump();
+        await _openSolicitudesTab(tester);
+
+        final dynamic state = tester.state(find.byType(DriverHomeScreen));
+        expect(state.debugOffers, hasLength(5));
+        expect(state.debugSelectedOfferId, isNull);
+
+        // Lista lazy real (Fase 12): no todas las 5 tarjetas están
+        // necesariamente construidas sin scroll. Scrolleamos hasta
+        // cada una para confirmar que la lista completa es alcanzable
+        // (Fase 24), no que estén todas pre-construidas de una.
+        for (var i = 1; i <= 5; i++) {
+          await _scrollToOfferCard(tester, 'offer-$i');
+          expect(
+            find.byKey(ValueKey('driver-offer-card-offer-$i')),
+            findsOneWidget,
+          );
+        }
+
+        // Ninguna quedó expandida por defecto.
+        expect(find.text('Hacer contraoferta'), findsNothing);
+      },
+    );
+
+    testWidgets(
+      'C: una nueva Offer entra a la lista sin robar la selección ya elegida por el Driver',
+      (tester) async {
+        final rides = _FakeRidesRepository();
+        final operations = _FakeOperationsRepository(
+          statusQueue: [
+            const DriverOperationalState(
+              status: DriverOperationalStatus.available,
+            ),
+          ],
+        );
+        final offers = _FakeOffersRepository(
+          pendingProposalsQueue: [const <DriverPendingProposal>[]],
+          activeOffersQueue: [
+            [
+              _offerFixture(id: 'offer-1'),
+              _offerFixture(id: 'offer-2', distanceToOriginMeters: 800),
+            ],
+            [
+              _offerFixture(id: 'offer-1'),
+              _offerFixture(id: 'offer-2', distanceToOriginMeters: 800),
+              _offerFixture(id: 'offer-3', distanceToOriginMeters: 300),
+            ],
+          ],
+        );
+
+        await _pumpHome(
+          tester,
+          rides: rides,
+          operations: operations,
+          offers: offers,
+        );
+        await tester.pump();
+        await _openSolicitudesTab(tester);
+
+        await _scrollToOfferCard(tester, 'offer-2');
+        await tester.tap(
+          find.byKey(const ValueKey('driver-offer-card-toggle-offer-2')),
+        );
+        await tester.pump();
+
+        final dynamic state = tester.state(find.byType(DriverHomeScreen));
+        expect(state.debugSelectedOfferId, 'offer-2');
+
+        await tester.pump(const Duration(seconds: 3));
+        await tester.pump();
+
+        expect(state.debugOffers, hasLength(3));
+        expect(state.debugSelectedOfferId, 'offer-2');
+      },
+    );
+
+    testWidgets(
+      'D: la Offer seleccionada desaparece del próximo poll -> selectedOfferId queda null (NO autoabre otra)',
+      (tester) async {
+        final rides = _FakeRidesRepository();
+        final operations = _FakeOperationsRepository(
+          statusQueue: [
+            const DriverOperationalState(
+              status: DriverOperationalStatus.available,
+            ),
+          ],
+        );
+        final offers = _FakeOffersRepository(
+          pendingProposalsQueue: [const <DriverPendingProposal>[]],
+          activeOffersQueue: [
+            [
+              _offerFixture(id: 'offer-1'),
+              _offerFixture(id: 'offer-2'),
+              _offerFixture(id: 'offer-3'),
+            ],
+            [_offerFixture(id: 'offer-1'), _offerFixture(id: 'offer-3')],
+          ],
+        );
+
+        await _pumpHome(
+          tester,
+          rides: rides,
+          operations: operations,
+          offers: offers,
+        );
+        await tester.pump();
+        await _openSolicitudesTab(tester);
+
+        await _scrollToOfferCard(tester, 'offer-2');
+        await tester.tap(
+          find.byKey(const ValueKey('driver-offer-card-toggle-offer-2')),
+        );
+        await tester.pump();
+
+        final dynamic state = tester.state(find.byType(DriverHomeScreen));
+        expect(state.debugSelectedOfferId, 'offer-2');
+
+        await tester.pump(const Duration(seconds: 3));
+        await tester.pump();
+
+        expect(
+          state.debugOffers.map((o) => o.id).toList(),
+          ['offer-1', 'offer-3'],
+        );
+        // G4B-R2: la lista sigue teniendo Offers, pero al desaparecer
+        // la seleccionada la selección queda en null — NO se autoabre
+        // ni offer-1 ni offer-3.
+        expect(state.debugSelectedOfferId, isNull);
+      },
+    );
+
+    testWidgets(
+      'E: la Offer seleccionada explícitamente desaparece siendo la única -> selectedOfferId queda null (NO autoabre otra)',
+      (tester) async {
+        final rides = _FakeRidesRepository();
+        final operations = _FakeOperationsRepository(
+          statusQueue: [
+            const DriverOperationalState(
+              status: DriverOperationalStatus.available,
+            ),
+          ],
+        );
+        final offers = _FakeOffersRepository(
+          pendingProposalsQueue: [const <DriverPendingProposal>[]],
+          activeOffersQueue: [
+            [_offerFixture(id: 'offer-1')],
+            const <DriverRideOffer>[],
+          ],
+        );
+
+        await _pumpHome(
+          tester,
+          rides: rides,
+          operations: operations,
+          offers: offers,
+        );
+        await tester.pump();
+        await _openSolicitudesTab(tester);
+
+        final dynamic state = tester.state(find.byType(DriverHomeScreen));
+        // Primero: sin tap, no hay selección (G4B-R2).
+        expect(state.debugSelectedOfferId, isNull);
+
+        await _selectOfferCard(tester, 'offer-1');
+        expect(state.debugSelectedOfferId, 'offer-1');
+
+        await tester.pump(const Duration(seconds: 3));
+        await tester.pump();
+
+        expect(state.debugOffers, isEmpty);
+        expect(state.debugSelectedOfferId, isNull);
+        expect(find.text('Sin solicitudes por ahora'), findsOneWidget);
+      },
+    );
+
+    group('G4B-R4: cerrar solicitud expandida (toggle)', () {
+      DriverRideOffer offerWithCoords(String id) {
+        final base = _offerFixture(id: id);
+
+        return DriverRideOffer(
+          id: base.id,
+          rideId: base.rideId,
+          status: base.status,
+          distanceToOriginMeters: base.distanceToOriginMeters,
+          estimatedFare: base.estimatedFare,
+          passengerOfferFare: base.passengerOfferFare,
+          proposedFare: base.proposedFare,
+          proposedAt: base.proposedAt,
+          currency: base.currency,
+          originAddress: base.originAddress,
+          destinationAddress: base.destinationAddress,
+          expiresAt: base.expiresAt,
+          originLatitude: -6.48,
+          originLongitude: -76.36,
+          destinationLatitude: -6.50,
+          destinationLongitude: -76.40,
+        );
+      }
+
+      testWidgets(
+        'tocar la tarjeta ya expandida la cierra: selectedOfferId vuelve a null y todas quedan compactas',
+        (tester) async {
+          final rides = _FakeRidesRepository();
+          final operations = _FakeOperationsRepository(
+            statusQueue: [
+              const DriverOperationalState(
+                status: DriverOperationalStatus.available,
+              ),
+            ],
+          );
+          final offers = _FakeOffersRepository(
+            pendingProposalsQueue: [const <DriverPendingProposal>[]],
+            activeOffersQueue: [
+              [offerWithCoords('offer-1'), _offerFixture(id: 'offer-2')],
+            ],
+          );
+
+          await _pumpHome(
+            tester,
+            rides: rides,
+            operations: operations,
+            offers: offers,
+          );
+          await tester.pump();
+          await _openSolicitudesTab(tester);
+
+          final dynamic state = tester.state(find.byType(DriverHomeScreen));
+
+          await _selectOfferCard(tester, 'offer-1');
+          expect(state.debugSelectedOfferId, 'offer-1');
+          expect(find.text('Aceptar S/ 7.00'), findsOneWidget);
+
+          final maps = tester.widgetList<DriverHomeMap>(
+            find.byType(DriverHomeMap),
+          );
+          expect(maps.first.markers, hasLength(2));
+          expect(state.debugOffersCameraRequest, isNotNull);
+
+          // Tocar la MISMA tarjeta, ya expandida, la cierra.
+          await _selectOfferCard(tester, 'offer-1');
+
+          expect(state.debugSelectedOfferId, isNull);
+          // Todas compactas: sin acciones visibles.
+          expect(find.text('Aceptar S/ 7.00'), findsNothing);
+          expect(find.text('Hacer contraoferta'), findsNothing);
+          expect(find.text('Rechazar solicitud'), findsNothing);
+
+          // Mapa vuelve a solo-Driver: markers A/B desaparecen.
+          final mapsAfterClose = tester.widgetList<DriverHomeMap>(
+            find.byType(DriverHomeMap),
+          );
+          expect(mapsAfterClose.first.markers, isEmpty);
+          // El cameraRequest A/B deja de estar activo.
+          expect(state.debugOffersCameraRequest, isNull);
+
+          // Cerrar es puramente local: ninguna llamada a Backend.
+          expect(offers.acceptOfferCalls, 0);
+          expect(offers.counterOfferCalls, 0);
+          expect(offers.rejectOfferCalls, 0);
+          // La Offer sigue en la lista: no fue rechazada ni eliminada.
+          expect(state.debugOffers.map((o) => o.id).toList(), [
+            'offer-1',
+            'offer-2',
+          ]);
+        },
+      );
+
+      testWidgets(
+        'A cerrada explícitamente + llega B en el siguiente poll: ninguna se autoabre',
+        (tester) async {
+          final rides = _FakeRidesRepository();
+          final operations = _FakeOperationsRepository(
+            statusQueue: [
+              const DriverOperationalState(
+                status: DriverOperationalStatus.available,
+              ),
+            ],
+          );
+          final offers = _FakeOffersRepository(
+            pendingProposalsQueue: [const <DriverPendingProposal>[]],
+            activeOffersQueue: [
+              [_offerFixture(id: 'offer-1')],
+              [_offerFixture(id: 'offer-1'), _offerFixture(id: 'offer-2')],
+            ],
+          );
+
+          await _pumpHome(
+            tester,
+            rides: rides,
+            operations: operations,
+            offers: offers,
+          );
+          await tester.pump();
+          await _openSolicitudesTab(tester);
+
+          await _selectOfferCard(tester, 'offer-1');
+
+          final dynamic state = tester.state(find.byType(DriverHomeScreen));
+          expect(state.debugSelectedOfferId, 'offer-1');
+
+          // Cierre manual.
+          await _selectOfferCard(tester, 'offer-1');
+          expect(state.debugSelectedOfferId, isNull);
+
+          // Llega offer-2 en el siguiente poll.
+          await tester.pump(const Duration(seconds: 3));
+          await tester.pump();
+
+          expect(
+            state.debugOffers.map((o) => o.id).toList(),
+            containsAll(['offer-1', 'offer-2']),
+          );
+          // Ninguna se autoabre tras el cierre manual.
+          expect(state.debugSelectedOfferId, isNull);
+        },
+      );
+
+      testWidgets(
+        'tocar Aceptar en la tarjeta expandida NO colapsa la tarjeta antes de ejecutar la acción',
+        (tester) async {
+          final rides = _FakeRidesRepository();
+          final operations = _FakeOperationsRepository(
+            statusQueue: [
+              const DriverOperationalState(
+                status: DriverOperationalStatus.available,
+              ),
+            ],
+          );
+          final offers = _FakeOffersRepository(
+            pendingProposalsQueue: [const <DriverPendingProposal>[]],
+            activeOffersQueue: [
+              [_offerFixture(id: 'offer-1')],
+            ],
+            acceptOfferResult: _offerFixture(id: 'offer-1'),
+          );
+
+          await _pumpHome(
+            tester,
+            rides: rides,
+            operations: operations,
+            offers: offers,
+          );
+          await tester.pump();
+          await _openSolicitudesTab(tester);
+
+          await _selectOfferCard(tester, 'offer-1');
+
+          final dynamic state = tester.state(find.byType(DriverHomeScreen));
+          expect(state.debugSelectedOfferId, 'offer-1');
+
+          // El botón real usa la Offer seleccionada -> el tap debe
+          // llegar al botón, NO al toggle del header.
+          await tester.tap(find.text('Aceptar S/ 7.00'));
+          await tester.pump();
+
+          expect(offers.acceptOfferCalls, 1);
+        },
+      );
+
+      testWidgets(
+        '20 Offers: expandir/cerrar cualquiera no rompe la lista lazy ni el scroll',
+        (tester) async {
+          final rides = _FakeRidesRepository();
+          final operations = _FakeOperationsRepository(
+            statusQueue: [
+              const DriverOperationalState(
+                status: DriverOperationalStatus.available,
+              ),
+            ],
+          );
+          final manyOffers = List.generate(
+            20,
+            (index) => _offerFixture(
+              id: 'offer-${index + 1}',
+              distanceToOriginMeters: (index + 1) * 100,
+            ),
+          );
+          final offers = _FakeOffersRepository(
+            pendingProposalsQueue: [const <DriverPendingProposal>[]],
+            activeOffersQueue: [manyOffers],
+          );
+
+          await _pumpHome(
+            tester,
+            rides: rides,
+            operations: operations,
+            offers: offers,
+          );
+          await tester.pump();
+          await _openSolicitudesTab(tester);
+
+          final dynamic state = tester.state(find.byType(DriverHomeScreen));
+
+          await _selectOfferCard(tester, 'offer-3');
+          expect(state.debugSelectedOfferId, 'offer-3');
+          expect(tester.takeException(), isNull);
+
+          await _selectOfferCard(tester, 'offer-3');
+          expect(state.debugSelectedOfferId, isNull);
+          expect(tester.takeException(), isNull);
+
+          // La lista lazy sigue siendo alcanzable por scroll tras el
+          // ciclo expandir/cerrar (no quedó en un estado roto).
+          await _scrollToOfferCard(tester, 'offer-20');
+          expect(
+            find.byKey(const ValueKey('driver-offer-card-offer-20')),
+            findsOneWidget,
+          );
+          expect(tester.takeException(), isNull);
+        },
+      );
+    });
+
+    testWidgets(
+      'F: Aceptar opera sobre la Offer seleccionada, no sobre la primera de la lista',
+      (tester) async {
+        final rides = _FakeRidesRepository();
+        final operations = _FakeOperationsRepository(
+          statusQueue: [
+            const DriverOperationalState(
+              status: DriverOperationalStatus.available,
+            ),
+          ],
+        );
+        final offers = _FakeOffersRepository(
+          pendingProposalsQueue: [const <DriverPendingProposal>[]],
+          activeOffersQueue: [
+            [
+              _offerFixture(id: 'offer-1', passengerOfferFare: '5.00'),
+              _offerFixture(id: 'offer-2', passengerOfferFare: '9.00'),
+            ],
+          ],
+          acceptOfferResult: _offerFixture(
+            id: 'offer-2',
+            passengerOfferFare: '9.00',
+          ),
+        );
+
+        await _pumpHome(
+          tester,
+          rides: rides,
+          operations: operations,
+          offers: offers,
+        );
+        await tester.pump();
+        await _openSolicitudesTab(tester);
+
+        await _scrollToOfferCard(tester, 'offer-2');
+        await tester.tap(
+          find.byKey(const ValueKey('driver-offer-card-toggle-offer-2')),
+        );
+        await tester.pump();
+
+        await tester.ensureVisible(find.text('Aceptar S/ 9.00'));
+        await tester.tap(find.text('Aceptar S/ 9.00'));
+        await tester.pump();
+        await tester.pump();
+
+        expect(offers.lastAcceptOfferId, 'offer-2');
+
+        final dynamic state = tester.state(find.byType(DriverHomeScreen));
+        expect(state.debugPendingProposals, hasLength(1));
+        expect(state.debugPendingProposals.first.offerId, 'offer-2');
+      },
+    );
+
+    testWidgets(
+      'G: Contraofertar opera sobre la Offer seleccionada, no sobre la primera de la lista',
+      (tester) async {
+        // Viewport alto: evita la complejidad de scrollear dentro de
+        // la lista lazy hasta un botón que recién aparece al expandir
+        // la tarjeta (el foco del test es la lógica de negocio, no el
+        // comportamiento de scroll, ya cubierto en otros tests).
+        tester.view.physicalSize = const Size(1080, 2400);
+        tester.view.devicePixelRatio = 1;
+        addTearDown(tester.view.resetPhysicalSize);
+        addTearDown(tester.view.resetDevicePixelRatio);
+
+        final rides = _FakeRidesRepository();
+        final operations = _FakeOperationsRepository(
+          statusQueue: [
+            const DriverOperationalState(
+              status: DriverOperationalStatus.available,
+            ),
+          ],
+        );
+        final offers = _FakeOffersRepository(
+          pendingProposalsQueue: [const <DriverPendingProposal>[]],
+          activeOffersQueue: [
+            [
+              _offerFixture(id: 'offer-1', passengerOfferFare: '5.00'),
+              _offerFixture(id: 'offer-2', passengerOfferFare: '9.00'),
+            ],
+          ],
+          counterOfferResult: _offerFixture(
+            id: 'offer-2',
+            passengerOfferFare: '9.00',
+          ),
+        );
+
+        await _pumpHome(
+          tester,
+          rides: rides,
+          operations: operations,
+          offers: offers,
+        );
+        await tester.pump();
+        await _openSolicitudesTab(tester);
+
+        await _scrollToOfferCard(tester, 'offer-2');
+        await tester.tap(
+          find.byKey(const ValueKey('driver-offer-card-toggle-offer-2')),
+        );
+        await tester.pump();
+
+        await tester.ensureVisible(find.text('Hacer contraoferta'));
+        await tester.tap(find.text('Hacer contraoferta'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 300));
+
+        await tester.enterText(find.byType(TextField), '8.00');
+        await tester.tap(find.text('Enviar'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 300));
+        await tester.pump();
+
+        expect(offers.lastCounterOfferId, 'offer-2');
+      },
+    );
+
+    testWidgets(
+      'H: Rechazar opera sobre la Offer seleccionada y remueve solo esa tarjeta, sin afectar las demás',
+      (tester) async {
+        // Ver comentario en el test G: viewport alto para no depender
+        // de scroll dentro de la lista lazy al expandir la tarjeta.
+        tester.view.physicalSize = const Size(1080, 2400);
+        tester.view.devicePixelRatio = 1;
+        addTearDown(tester.view.resetPhysicalSize);
+        addTearDown(tester.view.resetDevicePixelRatio);
+
+        final rides = _FakeRidesRepository();
+        final operations = _FakeOperationsRepository(
+          statusQueue: [
+            const DriverOperationalState(
+              status: DriverOperationalStatus.available,
+            ),
+          ],
+        );
+        final offers = _FakeOffersRepository(
+          pendingProposalsQueue: [const <DriverPendingProposal>[]],
+          activeOffersQueue: [
+            [_offerFixture(id: 'offer-1'), _offerFixture(id: 'offer-2')],
+            [_offerFixture(id: 'offer-1')],
+          ],
+        );
+
+        await _pumpHome(
+          tester,
+          rides: rides,
+          operations: operations,
+          offers: offers,
+        );
+        await tester.pump();
+        await _openSolicitudesTab(tester);
+
+        await _scrollToOfferCard(tester, 'offer-2');
+        await tester.tap(
+          find.byKey(const ValueKey('driver-offer-card-toggle-offer-2')),
+        );
+        await tester.pump();
+
+        await tester.ensureVisible(find.text('Rechazar solicitud'));
+        await tester.tap(find.text('Rechazar solicitud'));
+        await tester.pump();
+        await tester.pump();
+
+        expect(offers.lastRejectOfferId, 'offer-2');
+
+        final dynamic state = tester.state(find.byType(DriverHomeScreen));
+        expect(state.debugOffers.map((o) => o.id).toList(), ['offer-1']);
+      },
+    );
+
+    testWidgets(
+      'I: Rechazar con 409 igual refresca el mailbox (corrige asimetría detectada en G4A-AUDIT)',
+      (tester) async {
+        final rides = _FakeRidesRepository();
+        final operations = _FakeOperationsRepository(
+          statusQueue: [
+            const DriverOperationalState(
+              status: DriverOperationalStatus.available,
+            ),
+          ],
+        );
+        final offers = _FakeOffersRepository(
+          pendingProposalsQueue: [const <DriverPendingProposal>[]],
+          activeOffersQueue: [
+            [_offerFixture(id: 'offer-1')],
+            const <DriverRideOffer>[],
+          ],
+          rejectOfferError: _dioError(
+            statusCode: 409,
+            path: 'drivers/me/ride-offers/offer-1/reject',
+          ),
+        );
+
+        await _pumpHome(
+          tester,
+          rides: rides,
+          operations: operations,
+          offers: offers,
+        );
+        await tester.pump();
+        await _openSolicitudesTab(tester);
+        await _selectOfferCard(tester, 'offer-1');
+
+        await tester.ensureVisible(find.text('Rechazar solicitud'));
+        await tester.tap(find.text('Rechazar solicitud'));
+        await tester.pump();
+        await tester.pump();
+
+        expect(
+          find.text('La solicitud ya venció o dejó de estar disponible.'),
+          findsOneWidget,
+        );
+        expect(offers.activeOffersCalls, 2);
+
+        final dynamic state = tester.state(find.byType(DriverHomeScreen));
+        expect(state.debugOffers, isEmpty);
+      },
+    );
+
+    testWidgets(
+      'J: un active ride detectado durante el polling de ofertas tiene prioridad y navega a /active-ride',
+      (tester) async {
+        final rides = _FakeRidesRepository(
+          activeRideQueue: [null, null, _activeRide()],
+        );
+        final operations = _FakeOperationsRepository(
+          statusQueue: [
+            const DriverOperationalState(
+              status: DriverOperationalStatus.available,
+            ),
+          ],
+        );
+        final offers = _FakeOffersRepository(
+          pendingProposalsQueue: [const <DriverPendingProposal>[]],
+          activeOffersQueue: [
+            [_offerFixture(id: 'offer-1'), _offerFixture(id: 'offer-2')],
+          ],
+        );
+
+        await _pumpHome(
+          tester,
+          rides: rides,
+          operations: operations,
+          offers: offers,
+        );
+        await tester.pump();
+        await _openSolicitudesTab(tester);
+
+        expect(
+          find.byKey(const ValueKey('driver-offer-card-offer-1')),
+          findsOneWidget,
+        );
+
+        await tester.pump(const Duration(seconds: 3));
+        await tester.pump();
+
+        // El guard de active ride en `_loadOffers` (Fase 19) gana
+        // sobre la lista de ofertas ya visible: navega antes de que
+        // el próximo poll pueda seguir mostrando el mailbox.
+        expect(find.text('ACTIVE_RIDE_ROUTE'), findsOneWidget);
+      },
+    );
+  });
+
+  group('G4B2: robustez multi-offer, bottom nav y mapa A/B', () {
+    testWidgets(
+      'A: timeout en GET active después de [A,B] preserva la lista (no la vacía)',
+      (tester) async {
+        final rides = _FakeRidesRepository();
+        final operations = _FakeOperationsRepository(
+          statusQueue: [
+            const DriverOperationalState(
+              status: DriverOperationalStatus.available,
+            ),
+          ],
+        );
+        final offers = _FakeOffersRepository(
+          pendingProposalsQueue: [const <DriverPendingProposal>[]],
+          activeOffersQueue: [
+            [_offerFixture(id: 'offer-1'), _offerFixture(id: 'offer-2')],
+            _dioError(
+              statusCode: null,
+              type: DioExceptionType.connectionError,
+              path: 'drivers/me/ride-offers/active',
+            ),
+          ],
+        );
+
+        await _pumpHome(
+          tester,
+          rides: rides,
+          operations: operations,
+          offers: offers,
+        );
+        await tester.pump();
+        await _openSolicitudesTab(tester);
+
+        final dynamic state = tester.state(find.byType(DriverHomeScreen));
+        expect(state.debugOffers, hasLength(2));
+
+        await tester.pump(const Duration(seconds: 3));
+        await tester.pump();
+
+        // El timeout NO debe convertirse en lista vacía: se preserva
+        // la última respuesta 200 válida.
+        expect(state.debugOffers, hasLength(2));
+        expect(
+          state.debugOffers.map((o) => o.id).toList(),
+          ['offer-1', 'offer-2'],
+        );
+      },
+    );
+
+    testWidgets(
+      'B: 500 después de [A,B] preserva la lista, y el siguiente 200 exitoso [A,B,C] se aplica normalmente',
+      (tester) async {
+        final rides = _FakeRidesRepository();
+        final operations = _FakeOperationsRepository(
+          statusQueue: [
+            const DriverOperationalState(
+              status: DriverOperationalStatus.available,
+            ),
+          ],
+        );
+        final offers = _FakeOffersRepository(
+          pendingProposalsQueue: [const <DriverPendingProposal>[]],
+          activeOffersQueue: [
+            [_offerFixture(id: 'offer-1'), _offerFixture(id: 'offer-2')],
+            _dioError(
+              statusCode: 500,
+              path: 'drivers/me/ride-offers/active',
+            ),
+            [
+              _offerFixture(id: 'offer-1'),
+              _offerFixture(id: 'offer-2'),
+              _offerFixture(id: 'offer-3'),
+            ],
+          ],
+        );
+
+        await _pumpHome(
+          tester,
+          rides: rides,
+          operations: operations,
+          offers: offers,
+        );
+        await tester.pump();
+
+        final dynamic state = tester.state(find.byType(DriverHomeScreen));
+        expect(state.debugOffers, hasLength(2));
+
+        // Poll con 500: la lista se mantiene igual.
+        await tester.pump(const Duration(seconds: 3));
+        await tester.pump();
+        expect(state.debugOffers, hasLength(2));
+
+        // Siguiente poll exitoso: se aplica con normalidad.
+        await tester.pump(const Duration(seconds: 3));
+        await tester.pump();
+        expect(state.debugOffers, hasLength(3));
+        expect(
+          state.debugOffers.map((o) => o.id).toList(),
+          ['offer-1', 'offer-2', 'offer-3'],
+        );
+      },
+    );
+
+    testWidgets(
+      'C: ids duplicados en la respuesta de Backend se deduplican (primera ocurrencia gana, orden preservado)',
+      (tester) async {
+        final rides = _FakeRidesRepository();
+        final operations = _FakeOperationsRepository(
+          statusQueue: [
+            const DriverOperationalState(
+              status: DriverOperationalStatus.available,
+            ),
+          ],
+        );
+        final offers = _FakeOffersRepository(
+          pendingProposalsQueue: [const <DriverPendingProposal>[]],
+          activeOffersQueue: [
+            [
+              _offerFixture(id: 'offer-1', passengerOfferFare: '7.00'),
+              _offerFixture(id: 'offer-1', passengerOfferFare: '99.00'),
+              _offerFixture(id: 'offer-2'),
+            ],
+          ],
+        );
+
+        await _pumpHome(
+          tester,
+          rides: rides,
+          operations: operations,
+          offers: offers,
+        );
+        await tester.pump();
+
+        final dynamic state = tester.state(find.byType(DriverHomeScreen));
+        expect(
+          state.debugOffers.map((o) => o.id).toList(),
+          ['offer-1', 'offer-2'],
+        );
+        expect(state.debugOffers.first.passengerOfferFare, '7.00');
+      },
+    );
+
+    testWidgets(
+      'D: Aceptar con error también refresca el mailbox (mismo fix de Fase 16 ya aplicado en reject/counterOffer)',
+      (tester) async {
+        final rides = _FakeRidesRepository();
+        final operations = _FakeOperationsRepository(
+          statusQueue: [
+            const DriverOperationalState(
+              status: DriverOperationalStatus.available,
+            ),
+          ],
+        );
+        final offers = _FakeOffersRepository(
+          pendingProposalsQueue: [const <DriverPendingProposal>[]],
+          activeOffersQueue: [
+            [_offerFixture(id: 'offer-1')],
+            const <DriverRideOffer>[],
+          ],
+          acceptOfferResult: _dioError(
+            statusCode: 409,
+            path: 'drivers/me/ride-offers/offer-1/accept',
+          ),
+        );
+
+        await _pumpHome(
+          tester,
+          rides: rides,
+          operations: operations,
+          offers: offers,
+        );
+        await tester.pump();
+        await _openSolicitudesTab(tester);
+        await _selectOfferCard(tester, 'offer-1');
+
+        await tester.ensureVisible(find.text('Aceptar S/ 7.00'));
+        await tester.tap(find.text('Aceptar S/ 7.00'));
+        await tester.pump();
+        await tester.pump();
+
+        expect(
+          find.text('La oferta ya venció o fue asignada.'),
+          findsOneWidget,
+        );
+        expect(offers.activeOffersCalls, 2);
+
+        final dynamic state = tester.state(find.byType(DriverHomeScreen));
+        expect(state.debugOffers, isEmpty);
+      },
+    );
+
+    testWidgets(
+      'E: bottom nav — Inicio nunca muestra contenido de Offers, Ingresos/Perfil son placeholders honestos sin datos falsos',
+      (tester) async {
+        final rides = _FakeRidesRepository();
+        final operations = _FakeOperationsRepository(
+          statusQueue: [
+            const DriverOperationalState(
+              status: DriverOperationalStatus.available,
+            ),
+          ],
+        );
+        final offers = _FakeOffersRepository(
+          pendingProposalsQueue: [const <DriverPendingProposal>[]],
+          activeOffersQueue: [
+            [_offerFixture(id: 'offer-1')],
+          ],
+        );
+
+        await _pumpHome(
+          tester,
+          rides: rides,
+          operations: operations,
+          offers: offers,
+        );
+        await tester.pump();
+
+        // Inicio (default): sin tarjetas de Offer.
+        expect(
+          find.byKey(const ValueKey('driver-offer-card-offer-1')),
+          findsNothing,
+        );
+        expect(find.text('Disponible'), findsOneWidget);
+
+        await tester.tap(find.text('Ingresos'));
+        await tester.pump();
+        expect(find.byKey(const ValueKey('driver-tab-ingresos')), findsOneWidget);
+        expect(
+          find.text('Esta sección estará disponible próximamente.'),
+          findsOneWidget,
+        );
+
+        await tester.tap(find.text('Perfil'));
+        await tester.pump();
+        expect(find.byKey(const ValueKey('driver-tab-perfil')), findsOneWidget);
+
+        await tester.tap(find.text('Inicio'));
+        await tester.pump();
+        expect(find.text('Disponible'), findsOneWidget);
+        expect(
+          find.byKey(const ValueKey('driver-offer-card-offer-1')),
+          findsNothing,
+        );
+      },
+    );
+
+    testWidgets('F: el badge de Solicitudes muestra _offers.length real, no inventado', (
+      tester,
+    ) async {
+      final rides = _FakeRidesRepository();
+      final operations = _FakeOperationsRepository(
+        statusQueue: [
+          const DriverOperationalState(
+            status: DriverOperationalStatus.available,
+          ),
+        ],
+      );
+      final offers = _FakeOffersRepository(
+        pendingProposalsQueue: [const <DriverPendingProposal>[]],
+        activeOffersQueue: [
+          [
+            _offerFixture(id: 'offer-1'),
+            _offerFixture(id: 'offer-2'),
+            _offerFixture(id: 'offer-3'),
+          ],
+        ],
+      );
+
+      await _pumpHome(
+        tester,
+        rides: rides,
+        operations: operations,
+        offers: offers,
+      );
+      await tester.pump();
+
+      expect(find.text('3'), findsOneWidget);
+
+      final dynamic state = tester.state(find.byType(DriverHomeScreen));
+      expect(state.debugOffers, hasLength(3));
+    });
+
+    testWidgets(
+      'G: selectedOffer con coordenadas válidas produce markers A/B en el mapa de Solicitudes',
+      (tester) async {
+        final rides = _FakeRidesRepository();
+        final operations = _FakeOperationsRepository(
+          statusQueue: [
+            const DriverOperationalState(
+              status: DriverOperationalStatus.available,
+            ),
+          ],
+        );
+        final offer = _offerFixture(id: 'offer-1');
+        final offerWithCoords = DriverRideOffer(
+          id: offer.id,
+          rideId: offer.rideId,
+          status: offer.status,
+          distanceToOriginMeters: offer.distanceToOriginMeters,
+          estimatedFare: offer.estimatedFare,
+          passengerOfferFare: offer.passengerOfferFare,
+          proposedFare: offer.proposedFare,
+          proposedAt: offer.proposedAt,
+          currency: offer.currency,
+          originAddress: offer.originAddress,
+          destinationAddress: offer.destinationAddress,
+          expiresAt: offer.expiresAt,
+          originLatitude: -6.48,
+          originLongitude: -76.36,
+          destinationLatitude: -6.50,
+          destinationLongitude: -76.40,
+        );
+        final offers = _FakeOffersRepository(
+          pendingProposalsQueue: [const <DriverPendingProposal>[]],
+          activeOffersQueue: [
+            [offerWithCoords],
+          ],
+        );
+
+        await _pumpHome(
+          tester,
+          rides: rides,
+          operations: operations,
+          offers: offers,
+        );
+        await tester.pump();
+        await _openSolicitudesTab(tester);
+
+        final mapsBeforeSelection = tester.widgetList<DriverHomeMap>(
+          find.byType(DriverHomeMap),
+        );
+        // G4B-R2: sin tap explícito, sin selección -> sin markers A/B.
+        expect(mapsBeforeSelection.first.markers, isEmpty);
+
+        await _selectOfferCard(tester, 'offer-1');
+
+        final maps = tester.widgetList<DriverHomeMap>(
+          find.byType(DriverHomeMap),
+        );
+        expect(maps, hasLength(1));
+        expect(maps.first.markers, hasLength(2));
+
+        final dynamic state = tester.state(find.byType(DriverHomeScreen));
+        expect(state.debugOffersCameraRequest, isNotNull);
+      },
+    );
+
+    testWidgets(
+      'H: selectedOffer SIN coordenadas válidas no dibuja markers y no crashea',
+      (tester) async {
+        final rides = _FakeRidesRepository();
+        final operations = _FakeOperationsRepository(
+          statusQueue: [
+            const DriverOperationalState(
+              status: DriverOperationalStatus.available,
+            ),
+          ],
+        );
+        final offers = _FakeOffersRepository(
+          pendingProposalsQueue: [const <DriverPendingProposal>[]],
+          activeOffersQueue: [
+            [_offerFixture(id: 'offer-1')],
+          ],
+        );
+
+        await _pumpHome(
+          tester,
+          rides: rides,
+          operations: operations,
+          offers: offers,
+        );
+        await tester.pump();
+        await _openSolicitudesTab(tester);
+        // Selección explícita de una Offer SIN coordenadas: ejercita
+        // el branch real de `hasValidRouteCoordinates == false`, no
+        // solo el caso trivial de "nada seleccionado".
+        await _selectOfferCard(tester, 'offer-1');
+
+        expect(tester.takeException(), isNull);
+
+        final maps = tester.widgetList<DriverHomeMap>(
+          find.byType(DriverHomeMap),
+        );
+        expect(maps, hasLength(1));
+        expect(maps.first.markers, isEmpty);
+
+        final dynamic state = tester.state(find.byType(DriverHomeScreen));
+        expect(state.debugOffersCameraRequest, isNull);
+      },
+    );
+
+    testWidgets(
+      'I: un poll que NO cambia la Offer seleccionada no emite un cameraRequest nuevo (sin thrashing)',
+      (tester) async {
+        final rides = _FakeRidesRepository();
+        final operations = _FakeOperationsRepository(
+          statusQueue: [
+            const DriverOperationalState(
+              status: DriverOperationalStatus.available,
+            ),
+          ],
+        );
+        DriverRideOffer withCoords(String id) {
+          final base = _offerFixture(id: id);
+          return DriverRideOffer(
+            id: base.id,
+            rideId: base.rideId,
+            status: base.status,
+            distanceToOriginMeters: base.distanceToOriginMeters,
+            estimatedFare: base.estimatedFare,
+            passengerOfferFare: base.passengerOfferFare,
+            proposedFare: base.proposedFare,
+            proposedAt: base.proposedAt,
+            currency: base.currency,
+            originAddress: base.originAddress,
+            destinationAddress: base.destinationAddress,
+            expiresAt: base.expiresAt,
+            originLatitude: -6.48,
+            originLongitude: -76.36,
+            destinationLatitude: -6.50,
+            destinationLongitude: -76.40,
+          );
+        }
+
+        final offers = _FakeOffersRepository(
+          pendingProposalsQueue: [const <DriverPendingProposal>[]],
+          activeOffersQueue: [
+            [withCoords('offer-1'), withCoords('offer-2')],
+            [withCoords('offer-1'), withCoords('offer-2')],
+          ],
+        );
+
+        await _pumpHome(
+          tester,
+          rides: rides,
+          operations: operations,
+          offers: offers,
+        );
+        await tester.pump();
+        await _openSolicitudesTab(tester);
+        await _selectOfferCard(tester, 'offer-1');
+
+        final dynamic state = tester.state(find.byType(DriverHomeScreen));
+        final firstRequestId = state.debugOffersCameraRequest?.id;
+        expect(firstRequestId, isNotNull);
+
+        await tester.pump(const Duration(seconds: 3));
+        await tester.pump();
+
+        // Misma Offer seleccionada, mismas coordenadas: NO debe haber
+        // un pedido de cámara nuevo por este poll.
+        expect(state.debugOffersCameraRequest?.id, firstRequestId);
+      },
+    );
+
+    testWidgets(
+      'J: solo la tarjeta tocada se expande, el mapa refleja SU offer (no la primera), y re-seleccionar otra después funciona con normalidad',
+      (tester) async {
+        final rides = _FakeRidesRepository();
+        final operations = _FakeOperationsRepository(
+          statusQueue: [
+            const DriverOperationalState(
+              status: DriverOperationalStatus.available,
+            ),
+          ],
+        );
+        DriverRideOffer withCoords(
+          String id, {
+          required double originLat,
+          required double destLat,
+        }) {
+          final base = _offerFixture(id: id);
+          return DriverRideOffer(
+            id: base.id,
+            rideId: base.rideId,
+            status: base.status,
+            distanceToOriginMeters: base.distanceToOriginMeters,
+            estimatedFare: base.estimatedFare,
+            passengerOfferFare: base.passengerOfferFare,
+            proposedFare: base.proposedFare,
+            proposedAt: base.proposedAt,
+            currency: base.currency,
+            originAddress: base.originAddress,
+            destinationAddress: base.destinationAddress,
+            expiresAt: base.expiresAt,
+            originLatitude: originLat,
+            originLongitude: -76.36,
+            destinationLatitude: destLat,
+            destinationLongitude: -76.40,
+          );
+        }
+
+        final offers = _FakeOffersRepository(
+          pendingProposalsQueue: [const <DriverPendingProposal>[]],
+          activeOffersQueue: [
+            [
+              withCoords('offer-1', originLat: -6.10, destLat: -6.20),
+              withCoords('offer-2', originLat: -6.48, destLat: -6.50),
+            ],
+          ],
+        );
+
+        await _pumpHome(
+          tester,
+          rides: rides,
+          operations: operations,
+          offers: offers,
+        );
+        await tester.pump();
+        await _openSolicitudesTab(tester);
+
+        // Nadie expandida por defecto.
+        expect(find.text('Hacer contraoferta'), findsNothing);
+
+        await _selectOfferCard(tester, 'offer-2');
+
+        // Solo offer-2 expandida: sus acciones son visibles.
+        final dynamic state = tester.state(find.byType(DriverHomeScreen));
+        expect(state.debugSelectedOfferId, 'offer-2');
+        expect(find.text('Hacer contraoferta'), findsOneWidget);
+
+        // El mapa refleja las coordenadas de offer-2, no offer-1.
+        final maps = tester.widgetList<DriverHomeMap>(
+          find.byType(DriverHomeMap),
+        );
+        final originMarker = maps.first.markers.firstWhere(
+          (m) => m.markerId.value == 'solicitud-origin',
+        );
+        expect(originMarker.position.latitude, -6.48);
+
+        // Re-seleccionar otra tarjeta después funciona con normalidad.
+        await _selectOfferCard(tester, 'offer-1');
+        expect(state.debugSelectedOfferId, 'offer-1');
+
+        final mapsAfter = tester.widgetList<DriverHomeMap>(
+          find.byType(DriverHomeMap),
+        );
+        final originMarkerAfter = mapsAfter.first.markers.firstWhere(
+          (m) => m.markerId.value == 'solicitud-origin',
+        );
+        expect(originMarkerAfter.position.latitude, -6.10);
+      },
+    );
+
+    testWidgets(
+      'K: la tarjeta muestra el firstName real del Passenger cuando Backend lo entrega',
+      (tester) async {
+        final rides = _FakeRidesRepository();
+        final operations = _FakeOperationsRepository(
+          statusQueue: [
+            const DriverOperationalState(
+              status: DriverOperationalStatus.available,
+            ),
+          ],
+        );
+        final offers = _FakeOffersRepository(
+          pendingProposalsQueue: [const <DriverPendingProposal>[]],
+          activeOffersQueue: [
+            [_offerFixture(id: 'offer-1', passengerFirstName: 'Carlos')],
+          ],
+        );
+
+        await _pumpHome(
+          tester,
+          rides: rides,
+          operations: operations,
+          offers: offers,
+        );
+        await tester.pump();
+        await _openSolicitudesTab(tester);
+
+        expect(find.text('Carlos'), findsOneWidget);
+      },
+    );
+
+    testWidgets(
+      'L: sin firstName (Backend no lo entregó), la tarjeta NO inventa un placeholder tipo "Pasajero"',
+      (tester) async {
+        final rides = _FakeRidesRepository();
+        final operations = _FakeOperationsRepository(
+          statusQueue: [
+            const DriverOperationalState(
+              status: DriverOperationalStatus.available,
+            ),
+          ],
+        );
+        final offers = _FakeOffersRepository(
+          pendingProposalsQueue: [const <DriverPendingProposal>[]],
+          activeOffersQueue: [
+            [_offerFixture(id: 'offer-1')],
+          ],
+        );
+
+        await _pumpHome(
+          tester,
+          rides: rides,
+          operations: operations,
+          offers: offers,
+        );
+        await tester.pump();
+        await _openSolicitudesTab(tester);
+
+        expect(
+          find.byKey(const ValueKey('driver-offer-card-offer-1')),
+          findsOneWidget,
+        );
+        expect(find.text('Pasajero'), findsNothing);
+
+        final dynamic state = tester.state(find.byType(DriverHomeScreen));
+        expect(state.debugOffers.first.passengerFirstName, isNull);
+      },
+    );
+
+    testWidgets(
+      'M: firstName en 50 Offers no rompe la lista lazy ni el estado',
+      (tester) async {
+        final rides = _FakeRidesRepository();
+        final operations = _FakeOperationsRepository(
+          statusQueue: [
+            const DriverOperationalState(
+              status: DriverOperationalStatus.available,
+            ),
+          ],
+        );
+        final fiftyOffers = List.generate(
+          50,
+          (index) => _offerFixture(
+            id: 'offer-$index',
+            distanceToOriginMeters: (index + 1) * 50,
+            passengerFirstName: 'Passenger $index',
+          ),
+        );
+        final offers = _FakeOffersRepository(
+          pendingProposalsQueue: [const <DriverPendingProposal>[]],
+          activeOffersQueue: [fiftyOffers],
+        );
+
+        await _pumpHome(
+          tester,
+          rides: rides,
+          operations: operations,
+          offers: offers,
+        );
+        await tester.pump();
+        await _openSolicitudesTab(tester);
+
+        expect(tester.takeException(), isNull);
+
+        final dynamic state = tester.state(find.byType(DriverHomeScreen));
+        expect(state.debugOffers, hasLength(50));
+        expect(state.debugOffers.first.passengerFirstName, 'Passenger 0');
+        expect(state.debugOffers.last.passengerFirstName, 'Passenger 49');
+      },
+    );
   });
 
   testWidgets('Q: la Position válida obtenida se conserva en el Home', (
@@ -863,7 +2271,7 @@ void main() {
       );
       await tester.pump();
 
-      expect(find.text('Estás disponible'), findsOneWidget);
+      expect(find.text('Disponible'), findsOneWidget);
       expect(find.text('LOGIN_ROUTE'), findsNothing);
       // Home nunca necesitó leer/borrar tokens para completar el flujo.
       expect(secureStorageData[StorageKeys.accessToken], 'valid-access-token');
@@ -1065,7 +2473,8 @@ void main() {
     );
     await tester.pump();
 
-    expect(find.text('¡Nueva solicitud!'), findsOneWidget);
+    await _openSolicitudesTab(tester);
+    await _selectOfferCard(tester, 'offer-1');
 
     secureStorageData.remove(StorageKeys.accessToken);
 
@@ -1112,7 +2521,8 @@ void main() {
     );
     await tester.pump();
 
-    expect(find.text('¡Nueva solicitud!'), findsOneWidget);
+    await _openSolicitudesTab(tester);
+    await _selectOfferCard(tester, 'offer-1');
 
     secureStorageData.remove(StorageKeys.accessToken);
 
@@ -1164,7 +2574,8 @@ void main() {
     );
     await tester.pump();
 
-    expect(find.text('¡Nueva solicitud!'), findsOneWidget);
+    await _openSolicitudesTab(tester);
+    await _selectOfferCard(tester, 'offer-1');
 
     secureStorageData.remove(StorageKeys.accessToken);
 
@@ -1207,7 +2618,8 @@ void main() {
       );
       await tester.pump();
 
-      expect(find.text('¡Nueva solicitud!'), findsOneWidget);
+      await _openSolicitudesTab(tester);
+      await _selectOfferCard(tester, 'offer-1');
 
       await tester.ensureVisible(find.text('Aceptar S/ 7.00'));
       await tester.tap(find.text('Aceptar S/ 7.00'));
@@ -1250,7 +2662,8 @@ void main() {
       );
       await tester.pump();
 
-      expect(find.text('¡Nueva solicitud!'), findsOneWidget);
+      await _openSolicitudesTab(tester);
+      await _selectOfferCard(tester, 'offer-1');
 
       await tester.ensureVisible(find.text('Hacer contraoferta'));
       await tester.tap(find.text('Hacer contraoferta'));
@@ -1298,7 +2711,8 @@ void main() {
       );
       await tester.pump();
 
-      expect(find.text('¡Nueva solicitud!'), findsOneWidget);
+      await _openSolicitudesTab(tester);
+      await _selectOfferCard(tester, 'offer-1');
 
       await tester.ensureVisible(find.text('Rechazar solicitud'));
       await tester.tap(find.text('Rechazar solicitud'));
@@ -1356,7 +2770,8 @@ void main() {
       );
       await tester.pump();
 
-      expect(find.text('¡Nueva solicitud!'), findsOneWidget);
+      await _openSolicitudesTab(tester);
+      await _selectOfferCard(tester, 'offer-1');
 
       secureStorageData.remove(StorageKeys.accessToken);
 
@@ -1400,6 +2815,8 @@ void main() {
         offers: offers,
       );
       await tester.pump();
+      await _openSolicitudesTab(tester);
+      await _selectOfferCard(tester, 'offer-1');
 
       secureStorageData.remove(StorageKeys.accessToken);
 
@@ -1421,7 +2838,7 @@ void main() {
   group('Sin tarjeta superior de disponibilidad (cierre visual)', () {
     testWidgets(
       'A/B/C/D: AVAILABLE no tiene tarjeta "Estás en línea" ni Switch; '
-      'sí tiene "Estás disponible" y el CTA "Desconectarme"',
+      'sí tiene "Disponible" y el CTA "Desconectarme"',
       (tester) async {
         final rides = _FakeRidesRepository();
         final operations = _FakeOperationsRepository(
@@ -1444,7 +2861,7 @@ void main() {
         expect(find.text('Estás en línea'), findsNothing);
         expect(find.byType(Switch), findsNothing);
 
-        expect(find.text('Estás disponible'), findsOneWidget);
+        expect(find.text('Disponible'), findsOneWidget);
         expect(find.text('Desconectarme'), findsOneWidget);
       },
     );
@@ -1976,47 +3393,30 @@ void main() {
       );
     });
 
-    testWidgets('K: sin Position, el GPS pill no aparece', (tester) async {
-      final rides = _FakeRidesRepository();
-      final operations = _FakeOperationsRepository(
-        statusQueue: [
-          const DriverOperationalState(status: DriverOperationalStatus.offline),
-        ],
-      );
-      final offers = _FakeOffersRepository();
+    testWidgets(
+      'K: G4B2 eliminó el pill "Ubicación GPS activa" del tab Inicio; el texto ya no aparece en ningún estado',
+      (tester) async {
+        final rides = _FakeRidesRepository();
+        final operations = _FakeOperationsRepository(
+          statusQueue: [
+            const DriverOperationalState(
+              status: DriverOperationalStatus.available,
+            ),
+          ],
+        );
+        final offers = _FakeOffersRepository();
 
-      await _pumpHome(
-        tester,
-        rides: rides,
-        operations: operations,
-        offers: offers,
-      );
-      await tester.pump();
+        await _pumpHome(
+          tester,
+          rides: rides,
+          operations: operations,
+          offers: offers,
+        );
+        await tester.pump();
 
-      expect(find.text('Ubicación GPS activa'), findsNothing);
-    });
-
-    testWidgets('L: con Position fresh, el GPS pill aparece', (tester) async {
-      final rides = _FakeRidesRepository();
-      final operations = _FakeOperationsRepository(
-        statusQueue: [
-          const DriverOperationalState(
-            status: DriverOperationalStatus.available,
-          ),
-        ],
-      );
-      final offers = _FakeOffersRepository();
-
-      await _pumpHome(
-        tester,
-        rides: rides,
-        operations: operations,
-        offers: offers,
-      );
-      await tester.pump();
-
-      expect(find.text('Ubicación GPS activa'), findsOneWidget);
-    });
+        expect(find.text('Ubicación GPS activa'), findsNothing);
+      },
+    );
 
     testWidgets(
       'C: permissionDenied → myLocationEnabled queda en false (punto azul apagado)',
@@ -2679,7 +4079,7 @@ void main() {
   group('Checkpoint E: retorno post-PAID (Backend es autoridad)', () {
     testWidgets(
       'sin active ride ni pending payments y status AVAILABLE: '
-      'Home muestra "Estás disponible"',
+      'Home muestra "Disponible"',
       (tester) async {
         final rides = _FakeRidesRepository(
           activeRideQueue: [null],
@@ -2712,7 +4112,7 @@ void main() {
         );
         await tester.pump();
 
-        expect(find.text('Estás disponible'), findsOneWidget);
+        expect(find.text('Disponible'), findsOneWidget);
         expect(find.text('Estás desconectado'), findsNothing);
       },
     );
@@ -2743,7 +4143,7 @@ void main() {
         await tester.pump();
 
         expect(find.text('Estás desconectado'), findsWidgets);
-        expect(find.text('Estás disponible'), findsNothing);
+        expect(find.text('Disponible'), findsNothing);
       },
     );
 
@@ -2881,7 +4281,7 @@ Future<void> _runResponsiveScenarios(WidgetTester tester) async {
     },
   );
 
-  // OFFERED.
+  // OFFERED (G4B2: la lista vive en la tab Solicitudes).
   await _pumpAndExpectNoOverflow(
     tester,
     rides: _FakeRidesRepository(),
@@ -2895,9 +4295,10 @@ Future<void> _runResponsiveScenarios(WidgetTester tester) async {
         [_offer()],
       ],
     ),
+    beforeCheck: _openSolicitudesTab,
   );
 
-  // PROPOSED múltiples.
+  // PROPOSED múltiples (también en la tab Solicitudes).
   await _pumpAndExpectNoOverflow(
     tester,
     rides: _FakeRidesRepository(),
@@ -2915,6 +4316,31 @@ Future<void> _runResponsiveScenarios(WidgetTester tester) async {
         ],
       ],
     ),
+    beforeCheck: _openSolicitudesTab,
+  );
+
+  // Solicitudes con 50 Offers: la lista debe seguir siendo lazy y sin
+  // overflow con el volumen máximo esperado (Fase 24).
+  await _pumpAndExpectNoOverflow(
+    tester,
+    rides: _FakeRidesRepository(),
+    operations: _FakeOperationsRepository(
+      statusQueue: [
+        const DriverOperationalState(status: DriverOperationalStatus.available),
+      ],
+    ),
+    offers: _FakeOffersRepository(
+      activeOffersQueue: [
+        List.generate(
+          50,
+          (index) => _offerFixture(
+            id: 'offer-$index',
+            distanceToOriginMeters: (index + 1) * 100,
+          ),
+        ),
+      ],
+    ),
+    beforeCheck: _openSolicitudesTab,
   );
 
   // BUSY recovery.
@@ -2951,15 +4377,67 @@ Future<void> _pumpAndExpectNoOverflow(
   required _FakeOperationsRepository operations,
   required _FakeOffersRepository offers,
   void Function()? extraChecks,
+  Future<void> Function(WidgetTester tester)? beforeCheck,
 }) async {
   await _pumpHome(tester, rides: rides, operations: operations, offers: offers);
   await tester.pump();
   await tester.pump(const Duration(milliseconds: 50));
 
+  await beforeCheck?.call(tester);
+
   expect(tester.takeException(), isNull);
   extraChecks?.call();
 
   await tester.pumpWidget(const SizedBox.shrink());
+  await tester.pump();
+}
+
+/// G4B2: el mailbox de Offers/proposals vive exclusivamente en la
+/// tab "Solicitudes" (Inicio nunca las muestra). Los tests que
+/// necesiten ver esa UI deben cambiar de tab explícitamente primero,
+/// igual que lo haría el Driver real tocando el bottom nav.
+Future<void> _openSolicitudesTab(WidgetTester tester) async {
+  await tester.tap(find.text('Solicitudes'));
+  await tester.pump();
+}
+
+/// G4B2 (Fase 12): la lista de Solicitudes es un `ListView.builder`
+/// lazy real, sin `shrinkWrap`: los items fuera del viewport (+cache
+/// extent) simplemente no existen en el árbol todavía, así que
+/// `ensureVisible` no sirve para revelarlos (solo funciona sobre
+/// widgets ya construidos). Hay que scrollear de verdad.
+Future<void> _scrollToOfferCard(WidgetTester tester, String offerId) async {
+  await tester.scrollUntilVisible(
+    find.byKey(ValueKey('driver-offer-card-$offerId')),
+    250,
+    scrollable: find.byType(Scrollable),
+  );
+}
+
+/// G4B-R2: ninguna Offer se abre sola. Los tests que necesiten ver
+/// acciones/expansión deben tocar la tarjeta explícitamente primero,
+/// igual que lo haría el Driver real.
+///
+/// G4B-R4: el toggle vive en el header, siempre en la misma posición
+/// relativa (arriba de la tarjeta) tanto compacta como expandida.
+/// Se scrollea directo a esa key (no a la tarjeta completa): una
+/// tarjeta ya expandida es mucho más alta y `scrollUntilVisible`
+/// sobre la key exterior puede converger a una posición donde el
+/// header queda tapado por el bottom nav.
+///
+/// `scrollUntilVisible` solo garantiza visibilidad PARCIAL (se
+/// detiene apenas detecta cualquier intersección con el viewport),
+/// lo que puede dejar el header justo detrás del bottom nav. Por
+/// eso se completa con `ensureVisible`, que sí calcula el offset
+/// exacto para traerlo completamente a la vista una vez construido.
+Future<void> _selectOfferCard(WidgetTester tester, String offerId) async {
+  final toggle = find.byKey(ValueKey('driver-offer-card-toggle-$offerId'));
+
+  await tester.scrollUntilVisible(toggle, 250, scrollable: find.byType(Scrollable));
+  await tester.ensureVisible(toggle);
+  await tester.pump();
+
+  await tester.tap(toggle);
   await tester.pump();
 }
 
@@ -3126,6 +4604,34 @@ DriverRideOffer _offer() {
     originAddress: 'Origen',
     destinationAddress: 'Destino',
     expiresAt: DateTime.utc(2030),
+  );
+}
+
+/// Variante parametrizable de [_offer] para escenarios G4B1 con
+/// varias Offers simultáneas (distintos ids/distancias/tarifas).
+DriverRideOffer _offerFixture({
+  required String id,
+  num distanceToOriginMeters = 500,
+  String passengerOfferFare = '7.00',
+  String estimatedFare = '7.00',
+  String originAddress = 'Origen',
+  String destinationAddress = 'Destino',
+  String? passengerFirstName,
+}) {
+  return DriverRideOffer(
+    id: id,
+    rideId: 'ride-$id',
+    status: 'OFFERED',
+    distanceToOriginMeters: distanceToOriginMeters,
+    estimatedFare: estimatedFare,
+    passengerOfferFare: passengerOfferFare,
+    proposedFare: null,
+    proposedAt: null,
+    currency: 'PEN',
+    originAddress: originAddress,
+    destinationAddress: destinationAddress,
+    expiresAt: DateTime.utc(2030),
+    passengerFirstName: passengerFirstName,
   );
 }
 
@@ -3336,6 +4842,13 @@ class _FakeOffersRepository extends DriverOffersRepository {
   int counterOfferCalls = 0;
   int rejectOfferCalls = 0;
 
+  /// Último `offerId` recibido por cada acción: permite comprobar en
+  /// tests G4B1 que accept/counterOffer/reject operan sobre la Offer
+  /// realmente seleccionada, no sobre la primera de la lista.
+  String? lastAcceptOfferId;
+  String? lastCounterOfferId;
+  String? lastRejectOfferId;
+
   @override
   Future<List<DriverPendingProposal>> getPendingProposals() async {
     pendingProposalsCalls++;
@@ -3365,6 +4878,7 @@ class _FakeOffersRepository extends DriverOffersRepository {
   @override
   Future<DriverRideOffer> acceptOffer(String offerId) async {
     acceptOfferCalls++;
+    lastAcceptOfferId = offerId;
 
     final result = acceptOfferResult;
 
@@ -3381,6 +4895,7 @@ class _FakeOffersRepository extends DriverOffersRepository {
     String proposedFare,
   ) async {
     counterOfferCalls++;
+    lastCounterOfferId = offerId;
 
     final result = counterOfferResult;
 
@@ -3394,6 +4909,7 @@ class _FakeOffersRepository extends DriverOffersRepository {
   @override
   Future<void> rejectOffer(String offerId) async {
     rejectOfferCalls++;
+    lastRejectOfferId = offerId;
 
     if (rejectOfferDelay > Duration.zero) {
       await Future<void>.delayed(rejectOfferDelay);
