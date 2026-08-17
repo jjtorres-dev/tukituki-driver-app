@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../../core/router/driver_onboarding_routes.dart';
 import '../data/auth_repository.dart';
 
 class DriverSplashScreen extends ConsumerStatefulWidget {
@@ -106,28 +107,17 @@ class _DriverSplashScreenState extends ConsumerState<DriverSplashScreen>
           return;
         }
 
-        context.go('/login');
+        context.go(DriverOnboardingRoutes.login);
         return;
       }
 
-      final isDriver = await repository.isDriver();
+      final state = await repository.resolveSessionState();
 
       if (!mounted) {
         return;
       }
 
-      if (!isDriver) {
-        await repository.clearSession();
-
-        if (!mounted) {
-          return;
-        }
-
-        context.go('/login');
-        return;
-      }
-
-      context.go('/home');
+      goToDriverSessionRoute(context, state);
     } on DioException catch (error) {
       debugPrint(
         'Error HTTP restaurando sesión Driver: '
@@ -143,7 +133,7 @@ class _DriverSplashScreenState extends ConsumerState<DriverSplashScreen>
           return;
         }
 
-        context.go('/login');
+        context.go(DriverOnboardingRoutes.login);
         return;
       }
 
@@ -209,7 +199,7 @@ class _DriverSplashScreenState extends ConsumerState<DriverSplashScreen>
       return;
     }
 
-    context.go('/login');
+    context.go(DriverOnboardingRoutes.login);
   }
 
   @override

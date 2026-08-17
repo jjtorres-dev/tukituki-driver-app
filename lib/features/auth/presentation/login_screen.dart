@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../../core/router/driver_onboarding_routes.dart';
 import '../data/auth_repository.dart';
 
 class LoginScreen extends ConsumerStatefulWidget {
@@ -48,47 +49,25 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
 
     final repository = ref.read(authRepositoryProvider);
 
-    bool sessionCreated = false;
-
     try {
       await repository.login(
         phoneE164: '+51$phone',
         password: _passwordController.text,
       );
 
-      sessionCreated = true;
-
-      final isDriver = await repository.isDriver();
-
       if (!mounted) {
         return;
       }
 
-      if (!isDriver) {
-        await repository.logout();
-
-        if (!mounted) {
-          return;
-        }
-
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text(
-              'Esta cuenta no está habilitada '
-              'como conductor.',
-            ),
-          ),
-        );
-
-        return;
-      }
-
-      context.go('/home');
+      /*
+       * Ya NO se decide aquí si la cuenta "es conductor": una
+       * cuenta PASSENGER-only puede loguearse y postular (decisión
+       * de producto). El routing real (onboarding/home/suspendida/
+       * etc.) lo resuelve Splash releyendo la sesión recién creada
+       * con la misma lógica que usa al reabrir la app.
+       */
+      context.go(DriverOnboardingRoutes.splash);
     } on DioException catch (error) {
-      if (sessionCreated) {
-        await repository.logout();
-      }
-
       if (!mounted) {
         return;
       }
@@ -97,16 +76,12 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
 
       final statusCode = error.response?.statusCode;
 
-      if (!sessionCreated && statusCode == 401) {
+      if (statusCode == 401) {
         message = 'Teléfono o contraseña incorrectos.';
       } else if (statusCode == 403) {
         message = 'La cuenta no está habilitada.';
       } else if (error.response == null) {
-        message = sessionCreated
-            ? 'Iniciaste sesión, pero no pudimos '
-                  'validar tu cuenta de conductor. '
-                  'Revisa tu conexión e intenta nuevamente.'
-            : 'No se pudo conectar con TukiTuki.';
+        message = 'No se pudo conectar con TukiTuki.';
       } else if (statusCode != null && statusCode >= 500) {
         message =
             'TukiTuki no está disponible '
@@ -117,12 +92,6 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
         context,
       ).showSnackBar(SnackBar(content: Text(message)));
     } catch (error) {
-      if (sessionCreated) {
-        await repository.logout();
-      } else {
-        await repository.clearSession();
-      }
-
       if (!mounted) {
         return;
       }
@@ -551,63 +520,71 @@ class _DriverPartnerCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: const Color(0xFFFFDD6B).withValues(alpha: 0.2),
+    return Material(
+      color: const Color(0xFFFFDD6B).withValues(alpha: 0.2),
+      borderRadius: BorderRadius.circular(18),
+      child: InkWell(
+        key: const Key('login-create-account-link'),
         borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: const Color(0xFFE7E0CB)),
-      ),
-      child: const Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          DecoratedBox(
-            decoration: BoxDecoration(
-              color: Color(0xFFFFC72C),
-              shape: BoxShape.circle,
-            ),
-            child: Padding(
-              padding: EdgeInsets.all(9),
-              child: Icon(
-                Icons.handshake_outlined,
-                size: 20,
-                color: Color(0xFF123B26),
-              ),
-            ),
+        onTap: () => context.go(DriverOnboardingRoutes.account),
+        child: Container(
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(18),
+            border: Border.all(color: const Color(0xFFE7E0CB)),
           ),
-          SizedBox(width: 12),
-          Expanded(
-            child: Text.rich(
-              TextSpan(
-                style: TextStyle(
-                  color: Color(0xFF6B4E14),
-                  fontSize: 14,
-                  fontWeight: FontWeight.w600,
-                  height: 1.4,
+          child: const Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              DecoratedBox(
+                decoration: BoxDecoration(
+                  color: Color(0xFFFFC72C),
+                  shape: BoxShape.circle,
                 ),
-                children: [
-                  TextSpan(
-                    text: '¿Aún no eres socio conductor?\n',
-                    style: TextStyle(
-                      color: Color(0xFF123B26),
-                      fontWeight: FontWeight.w700,
-                    ),
+                child: Padding(
+                  padding: EdgeInsets.all(9),
+                  child: Icon(
+                    Icons.handshake_outlined,
+                    size: 20,
+                    color: Color(0xFF123B26),
                   ),
-                  TextSpan(
-                    text: 'Postula aquí',
-                    style: TextStyle(
-                      color: Color(0xFFC97313),
-                      fontWeight: FontWeight.w800,
-                    ),
-                  ),
-                  TextSpan(
-                    text: ' y empieza a generar ingresos con tu mototaxi.',
-                  ),
-                ],
+                ),
               ),
-            ),
+              SizedBox(width: 12),
+              Expanded(
+                child: Text.rich(
+                  TextSpan(
+                    style: TextStyle(
+                      color: Color(0xFF6B4E14),
+                      fontSize: 14,
+                      fontWeight: FontWeight.w600,
+                      height: 1.4,
+                    ),
+                    children: [
+                      TextSpan(
+                        text: '¿Aún no eres socio conductor?\n',
+                        style: TextStyle(
+                          color: Color(0xFF123B26),
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                      TextSpan(
+                        text: 'Crea tu cuenta',
+                        style: TextStyle(
+                          color: Color(0xFFC97313),
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                      TextSpan(
+                        text: ' y empieza a generar ingresos con tu mototaxi.',
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
           ),
-        ],
+        ),
       ),
     );
   }

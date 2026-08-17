@@ -26,7 +26,7 @@ void main() {
       find.textContaining('¿Aún no eres socio conductor?'),
       findsOneWidget,
     );
-    expect(find.textContaining('Postula aquí'), findsOneWidget);
+    expect(find.textContaining('Crea tu cuenta'), findsOneWidget);
     expect(find.textContaining('¿Eres pasajero?'), findsOneWidget);
     expect(find.textContaining('Ir a TukiTuki App'), findsOneWidget);
     expect(_driverLogoFinder(), findsOneWidget);
@@ -88,33 +88,36 @@ void main() {
     expect(repository.lastPassword, 'password');
   });
 
-  testWidgets('login exitoso y auth/me DRIVER navega a home', (tester) async {
-    final repository = _FakeAuthRepository();
-    await _pumpLogin(tester, repository);
+  testWidgets(
+    'login exitoso navega a /splash (routing real lo decide Splash)',
+    (tester) async {
+      final repository = _FakeAuthRepository();
+      await _pumpLogin(tester, repository);
 
-    await _enterCredentials(tester);
-    await _tapSubmit(tester);
+      await _enterCredentials(tester);
+      await _tapSubmit(tester);
 
-    expect(find.text('HOME_ROUTE'), findsOneWidget);
-    expect(repository.isDriverCalls, 1);
-  });
+      expect(find.text('SPLASH_ROUTE'), findsOneWidget);
+    },
+  );
 
-  testWidgets('auth/me no DRIVER conserva cleanup y no entra a home', (
-    tester,
-  ) async {
-    final repository = _FakeAuthRepository(isDriverResult: false);
-    await _pumpLogin(tester, repository);
+  testWidgets(
+    'una cuenta PASSENGER-only NO se desloguea ni bloquea en Login: la resolución queda para Splash',
+    (tester) async {
+      // Este checkpoint quitó el gate `isDriver()` + logout de Login:
+      // una cuenta sin rol DRIVER hoy puede loguearse y postular
+      // (decisión de producto). No hay ningún método `isDriver`
+      // que este repositorio falso necesite implementar.
+      final repository = _FakeAuthRepository();
+      await _pumpLogin(tester, repository);
 
-    await _enterCredentials(tester);
-    await _tapSubmit(tester);
+      await _enterCredentials(tester);
+      await _tapSubmit(tester);
 
-    expect(repository.logoutCalls, 1);
-    expect(find.text('HOME_ROUTE'), findsNothing);
-    expect(
-      find.text('Esta cuenta no está habilitada como conductor.'),
-      findsOneWidget,
-    );
-  });
+      expect(repository.logoutCalls, 0);
+      expect(find.text('SPLASH_ROUTE'), findsOneWidget);
+    },
+  );
 
   testWidgets('401 muestra credenciales incorrectas', (tester) async {
     final repository = _FakeAuthRepository(loginError: _dioError(401));
@@ -124,7 +127,7 @@ void main() {
     await _tapSubmit(tester);
 
     expect(find.text('Teléfono o contraseña incorrectos.'), findsOneWidget);
-    expect(repository.logoutCalls, 0);
+    expect(find.text('SPLASH_ROUTE'), findsNothing);
   });
 
   testWidgets('403 muestra cuenta no habilitada', (tester) async {
@@ -147,7 +150,7 @@ void main() {
     await _tapSubmit(tester);
 
     expect(find.text('No se pudo conectar con TukiTuki.'), findsOneWidget);
-    expect(find.text('HOME_ROUTE'), findsNothing);
+    expect(find.text('SPLASH_ROUTE'), findsNothing);
   });
 
   testWidgets('5xx muestra indisponibilidad temporal', (tester) async {
@@ -253,38 +256,51 @@ void main() {
     expect(find.text('TukiTuki Conductor'), findsOneWidget);
   });
 
-  testWidgets('copys informativos no navegan ni ejecutan login', (
+  testWidgets(
+    'copys informativos (olvidé mi contraseña / pasajero) no navegan ni ejecutan login',
+    (tester) async {
+      final repository = _FakeAuthRepository();
+      await _pumpLogin(tester, repository);
+
+      final forgot = find.text('¿Olvidaste tu contraseña?');
+      final passenger = find.textContaining('Ir a TukiTuki App');
+
+      await tester.tap(forgot);
+      await tester.ensureVisible(passenger);
+      await tester.tap(passenger);
+      await tester.pump();
+
+      expect(find.text('SPLASH_ROUTE'), findsNothing);
+      expect(find.text('ACCOUNT_ROUTE'), findsNothing);
+      expect(repository.loginCalls, 0);
+      expect(
+        find.ancestor(of: forgot, matching: find.byType(InkWell)),
+        findsNothing,
+      );
+      expect(
+        find.ancestor(of: passenger, matching: find.byType(InkWell)),
+        findsNothing,
+      );
+    },
+  );
+
+  testWidgets('"Crea tu cuenta" navega a la pantalla de crear cuenta', (
     tester,
   ) async {
     final repository = _FakeAuthRepository();
     await _pumpLogin(tester, repository);
 
-    final forgot = find.text('¿Olvidaste tu contraseña?');
-    final apply = find.textContaining('Postula aquí');
-    final passenger = find.textContaining('Ir a TukiTuki App');
+    final createAccountLink = find.byKey(
+      const Key('login-create-account-link'),
+    );
 
-    await tester.tap(forgot);
-    await tester.ensureVisible(apply);
-    await tester.tap(apply);
-    await tester.ensureVisible(passenger);
-    await tester.tap(passenger);
+    await tester.ensureVisible(createAccountLink);
+    await tester.tap(createAccountLink);
     await tester.pump();
+    await tester.pump(const Duration(milliseconds: 20));
 
-    expect(find.text('HOME_ROUTE'), findsNothing);
-    expect(find.text('LOGIN_ROUTE'), findsNothing);
+    expect(find.text('ACCOUNT_ROUTE'), findsOneWidget);
     expect(repository.loginCalls, 0);
-    expect(
-      find.ancestor(of: forgot, matching: find.byType(InkWell)),
-      findsNothing,
-    );
-    expect(
-      find.ancestor(of: apply, matching: find.byType(InkWell)),
-      findsNothing,
-    );
-    expect(
-      find.ancestor(of: passenger, matching: find.byType(InkWell)),
-      findsNothing,
-    );
   });
 }
 
@@ -317,8 +333,13 @@ Future<void> _pumpLogin(
     routes: [
       GoRoute(path: '/login', builder: (context, state) => const LoginScreen()),
       GoRoute(
-        path: '/home',
-        builder: (context, state) => const Scaffold(body: Text('HOME_ROUTE')),
+        path: '/splash',
+        builder: (context, state) => const Scaffold(body: Text('SPLASH_ROUTE')),
+      ),
+      GoRoute(
+        path: '/onboarding/account',
+        builder: (context, state) =>
+            const Scaffold(body: Text('ACCOUNT_ROUTE')),
       ),
     ],
   );
@@ -360,20 +381,14 @@ DioException _dioError(
 }
 
 class _FakeAuthRepository extends AuthRepository {
-  _FakeAuthRepository({
-    this.isDriverResult = true,
-    this.loginError,
-    this.loginCompleter,
-  }) : super(Dio(), const FlutterSecureStorage());
+  _FakeAuthRepository({this.loginError, this.loginCompleter})
+    : super(Dio(), const FlutterSecureStorage());
 
-  final bool isDriverResult;
   final Object? loginError;
   final Completer<void>? loginCompleter;
 
   int loginCalls = 0;
-  int isDriverCalls = 0;
   int logoutCalls = 0;
-  int clearSessionCalls = 0;
   String? lastPhoneE164;
   String? lastPassword;
 
@@ -394,18 +409,7 @@ class _FakeAuthRepository extends AuthRepository {
   }
 
   @override
-  Future<bool> isDriver() async {
-    isDriverCalls += 1;
-    return isDriverResult;
-  }
-
-  @override
   Future<void> logout() async {
     logoutCalls += 1;
-  }
-
-  @override
-  Future<void> clearSession() async {
-    clearSessionCalls += 1;
   }
 }

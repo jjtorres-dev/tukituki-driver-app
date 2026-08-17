@@ -6,7 +6,25 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
 
 import 'package:driver/features/auth/data/auth_repository.dart';
+import 'package:driver/features/auth/domain/authenticated_user.dart';
+import 'package:driver/features/auth/domain/driver_session_state.dart';
 import 'package:driver/features/auth/presentation/driver_splash_screen.dart';
+import 'package:driver/features/driver/domain/driver_application.dart';
+
+const _user = AuthenticatedUser(
+  id: 'user-1',
+  phoneE164: '+51987654321',
+  roles: ['PASSENGER', 'DRIVER'],
+  status: 'ACTIVE',
+  isPhoneVerified: true,
+);
+
+DriverSessionState _stateOf(
+  DriverSessionKind kind, {
+  DriverApplication? application,
+}) {
+  return DriverSessionState(kind: kind, user: _user, application: application);
+}
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -40,11 +58,13 @@ void main() {
 
     expect(find.text('LOGIN_ROUTE'), findsOneWidget);
     expect(repository.clearSessionCalls, 1);
-    expect(repository.isDriverCalls, 0);
+    expect(repository.resolveSessionStateCalls, 0);
   });
 
-  testWidgets('sesión válida con rol DRIVER navega a home', (tester) async {
-    final repository = _FakeAuthRepository();
+  testWidgets('APPROVED + rol DRIVER navega a home', (tester) async {
+    final repository = _FakeAuthRepository(
+      results: [_stateOf(DriverSessionKind.approved)],
+    );
     await _pumpSplash(tester, repository);
 
     await _finishInitialDelay(tester);
@@ -53,23 +73,126 @@ void main() {
     expect(repository.clearSessionCalls, 0);
   });
 
-  testWidgets('rol distinto de DRIVER limpia la sesión y navega a login', (
-    tester,
-  ) async {
-    final repository = _FakeAuthRepository(driverResults: [false]);
+  testWidgets(
+    'MVP: teléfono no verificado + sin solicitud navega igual al onboarding '
+    '(OTP diferido, no bloquea)',
+    (tester) async {
+      final repository = _FakeAuthRepository(
+        results: [
+          DriverSessionState(
+            kind: DriverSessionKind.noProfile,
+            user: const AuthenticatedUser(
+              id: 'user-1',
+              phoneE164: '+51987654321',
+              roles: ['PASSENGER'],
+              status: 'ACTIVE',
+              isPhoneVerified: false,
+            ),
+          ),
+        ],
+      );
+      await _pumpSplash(tester, repository);
+
+      await _finishInitialDelay(tester);
+
+      expect(find.text('ONBOARDING_START_ROUTE'), findsOneWidget);
+      expect(repository.clearSessionCalls, 0);
+    },
+  );
+
+  testWidgets(
+    'sin solicitud de conductor (404) navega al inicio del onboarding',
+    (tester) async {
+      final repository = _FakeAuthRepository(
+        results: [_stateOf(DriverSessionKind.noProfile)],
+      );
+      await _pumpSplash(tester, repository);
+
+      await _finishInitialDelay(tester);
+
+      expect(find.text('ONBOARDING_START_ROUTE'), findsOneWidget);
+    },
+  );
+
+  testWidgets('DRAFT navega al mismo inicio del onboarding', (tester) async {
+    final repository = _FakeAuthRepository(
+      results: [_stateOf(DriverSessionKind.draft)],
+    );
     await _pumpSplash(tester, repository);
 
     await _finishInitialDelay(tester);
 
-    expect(find.text('LOGIN_ROUTE'), findsOneWidget);
-    expect(repository.clearSessionCalls, 1);
+    expect(find.text('ONBOARDING_START_ROUTE'), findsOneWidget);
+  });
+
+  testWidgets('REJECTED navega a la pantalla de corrección', (tester) async {
+    final repository = _FakeAuthRepository(
+      results: [_stateOf(DriverSessionKind.rejected)],
+    );
+    await _pumpSplash(tester, repository);
+
+    await _finishInitialDelay(tester);
+
+    expect(find.text('REJECTED_ROUTE'), findsOneWidget);
+  });
+
+  testWidgets('PENDING_REVIEW navega a la pantalla de revisión', (
+    tester,
+  ) async {
+    final repository = _FakeAuthRepository(
+      results: [_stateOf(DriverSessionKind.pendingReview)],
+    );
+    await _pumpSplash(tester, repository);
+
+    await _finishInitialDelay(tester);
+
+    expect(find.text('REVIEW_ROUTE'), findsOneWidget);
+  });
+
+  testWidgets('SUSPENDED navega a la pantalla de suspensión', (tester) async {
+    final repository = _FakeAuthRepository(
+      results: [_stateOf(DriverSessionKind.suspended)],
+    );
+    await _pumpSplash(tester, repository);
+
+    await _finishInitialDelay(tester);
+
+    expect(find.text('SUSPENDED_ROUTE'), findsOneWidget);
+  });
+
+  testWidgets('APPROVED sin rol DRIVER (inconsistencia) NUNCA entra a home', (
+    tester,
+  ) async {
+    final repository = _FakeAuthRepository(
+      results: [_stateOf(DriverSessionKind.approvedRoleMismatch)],
+    );
+    await _pumpSplash(tester, repository);
+
+    await _finishInitialDelay(tester);
+
+    expect(find.text('HOME_ROUTE'), findsNothing);
+    expect(find.text('STATE_ERROR_ROUTE'), findsOneWidget);
+  });
+
+  testWidgets('status de solicitud desconocido NUNCA entra a home', (
+    tester,
+  ) async {
+    final repository = _FakeAuthRepository(
+      results: [_stateOf(DriverSessionKind.unknownApplicationStatus)],
+    );
+    await _pumpSplash(tester, repository);
+
+    await _finishInitialDelay(tester);
+
+    expect(find.text('HOME_ROUTE'), findsNothing);
+    expect(find.text('STATE_ERROR_ROUTE'), findsOneWidget);
   });
 
   testWidgets('401 definitivo limpia la sesión y navega a login', (
     tester,
   ) async {
     final repository = _FakeAuthRepository(
-      driverResults: [_dioError(statusCode: 401)],
+      results: [_dioError(statusCode: 401)],
     );
     await _pumpSplash(tester, repository);
 
@@ -83,7 +206,7 @@ void main() {
     tester,
   ) async {
     final repository = _FakeAuthRepository(
-      driverResults: [_dioError(type: DioExceptionType.connectionTimeout)],
+      results: [_dioError(type: DioExceptionType.connectionTimeout)],
     );
     await _pumpSplash(tester, repository);
 
@@ -100,7 +223,7 @@ void main() {
     tester,
   ) async {
     final repository = _FakeAuthRepository(
-      driverResults: [_dioError(type: DioExceptionType.connectionError)],
+      results: [_dioError(type: DioExceptionType.connectionError)],
     );
     await _pumpSplash(tester, repository);
 
@@ -115,7 +238,7 @@ void main() {
     tester,
   ) async {
     final repository = _FakeAuthRepository(
-      driverResults: [_dioError(statusCode: 503)],
+      results: [_dioError(statusCode: 503)],
     );
     await _pumpSplash(tester, repository);
 
@@ -133,21 +256,21 @@ void main() {
     'Reintentar ejecuta una restauración y un retry exitoso va a home',
     (tester) async {
       final repository = _FakeAuthRepository(
-        driverResults: [
+        results: [
           _dioError(type: DioExceptionType.connectionError),
-          true,
+          _stateOf(DriverSessionKind.approved),
         ],
       );
       await _pumpSplash(tester, repository);
       await _finishInitialDelay(tester);
 
-      expect(repository.isDriverCalls, 1);
+      expect(repository.resolveSessionStateCalls, 1);
 
       await tester.tap(find.text('Reintentar'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 20));
 
-      expect(repository.isDriverCalls, 2);
+      expect(repository.resolveSessionStateCalls, 2);
       expect(find.text('HOME_ROUTE'), findsOneWidget);
     },
   );
@@ -217,6 +340,35 @@ Future<void> _pumpSplash(
         path: '/home',
         builder: (context, state) => const Scaffold(body: Text('HOME_ROUTE')),
       ),
+      GoRoute(
+        path: '/onboarding/account',
+        builder: (context, state) =>
+            const Scaffold(body: Text('ACCOUNT_ROUTE')),
+      ),
+      GoRoute(
+        path: '/onboarding/start',
+        builder: (context, state) =>
+            const Scaffold(body: Text('ONBOARDING_START_ROUTE')),
+      ),
+      GoRoute(
+        path: '/onboarding/rejected',
+        builder: (context, state) =>
+            const Scaffold(body: Text('REJECTED_ROUTE')),
+      ),
+      GoRoute(
+        path: '/onboarding/review-status',
+        builder: (context, state) => const Scaffold(body: Text('REVIEW_ROUTE')),
+      ),
+      GoRoute(
+        path: '/suspended',
+        builder: (context, state) =>
+            const Scaffold(body: Text('SUSPENDED_ROUTE')),
+      ),
+      GoRoute(
+        path: '/onboarding/state-error',
+        builder: (context, state) =>
+            const Scaffold(body: Text('STATE_ERROR_ROUTE')),
+      ),
     ],
   );
   addTearDown(router.dispose);
@@ -257,29 +409,25 @@ DioException _dioError({
 }
 
 class _FakeAuthRepository extends AuthRepository {
-  _FakeAuthRepository({
-    this.hasSessionResult = true,
-    List<Object>? driverResults,
-  }) : driverResults = driverResults ?? <Object>[true],
-       super(Dio(), const FlutterSecureStorage());
+  _FakeAuthRepository({this.hasSessionResult = true, List<Object>? results})
+    : results = results ?? <Object>[_stateOf(DriverSessionKind.approved)],
+      super(Dio(), const FlutterSecureStorage());
 
   final bool hasSessionResult;
-  final List<Object> driverResults;
+  final List<Object> results;
 
-  int isDriverCalls = 0;
+  int resolveSessionStateCalls = 0;
   int clearSessionCalls = 0;
 
   @override
   Future<bool> hasSession() async => hasSessionResult;
 
   @override
-  Future<bool> isDriver() async {
-    isDriverCalls += 1;
-    final result = driverResults.length > 1
-        ? driverResults.removeAt(0)
-        : driverResults.first;
+  Future<DriverSessionState> resolveSessionState() async {
+    resolveSessionStateCalls += 1;
+    final result = results.length > 1 ? results.removeAt(0) : results.first;
 
-    if (result is bool) {
+    if (result is DriverSessionState) {
       return result;
     }
 
