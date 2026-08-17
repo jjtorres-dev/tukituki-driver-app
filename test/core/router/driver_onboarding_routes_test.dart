@@ -8,7 +8,7 @@ void main() {
     test('mapea cada DriverSessionKind exactamente a un path', () {
       expect(
         routeForDriverSessionKind(DriverSessionKind.noProfile),
-        DriverOnboardingRoutes.start,
+        DriverOnboardingRoutes.aboutYou,
       );
       expect(
         routeForDriverSessionKind(DriverSessionKind.draft),
@@ -40,15 +40,21 @@ void main() {
       );
     });
 
-    test(
-      'noProfile y draft comparten la misma pantalla (no existe lastCompletedStep)',
-      () {
-        expect(
-          routeForDriverSessionKind(DriverSessionKind.noProfile),
-          routeForDriverSessionKind(DriverSessionKind.draft),
-        );
-      },
-    );
+    test('noProfile va al formulario real de Sobre ti; draft a la foundation '
+        '(DRIVER-ONBOARDING-R3.4: ya no comparten pantalla)', () {
+      expect(
+        routeForDriverSessionKind(DriverSessionKind.noProfile),
+        isNot(routeForDriverSessionKind(DriverSessionKind.draft)),
+      );
+      expect(
+        routeForDriverSessionKind(DriverSessionKind.noProfile),
+        DriverOnboardingRoutes.aboutYou,
+      );
+      expect(
+        routeForDriverSessionKind(DriverSessionKind.draft),
+        DriverOnboardingRoutes.start,
+      );
+    });
 
     test('approved es el único kind que enruta a Home', () {
       for (final kind in DriverSessionKind.values) {

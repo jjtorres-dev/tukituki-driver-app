@@ -98,48 +98,45 @@ void main() {
     expect(repository.registerCalls, 1);
     expect(repository.loginCalls, 1);
     expect(repository.lastPhoneE164, '+51943154443');
-    expect(find.text('ONBOARDING_START_ROUTE'), findsOneWidget);
+    expect(find.text('ABOUT_YOU_ROUTE'), findsOneWidget);
   });
 
   group('409 en registro (teléfono ya registrado)', () {
-    testWidgets(
-      'muestra el modal centrado (no SnackBar) con título y CTA, '
-      'y restaura el loading',
-      (tester) async {
-        final repository = _FakeAuthRepository(
-          registerError: _dioError(409, path: 'auth/register/passenger'),
-        );
-        await _pumpScreen(tester, repository);
+    testWidgets('muestra el modal centrado (no SnackBar) con título y CTA, '
+        'y restaura el loading', (tester) async {
+      final repository = _FakeAuthRepository(
+        registerError: _dioError(409, path: 'auth/register/passenger'),
+      );
+      await _pumpScreen(tester, repository);
 
-        await _fillValidForm(tester);
-        await _tapSubmit(tester);
+      await _fillValidForm(tester);
+      await _tapSubmit(tester);
 
-        // A. modal visible.
-        expect(find.byType(Dialog), findsOneWidget);
-        // B. título del modal.
-        expect(find.text('Número ya registrado'), findsOneWidget);
-        expect(
-          find.textContaining('ya tiene una cuenta en TukiTuki'),
-          findsOneWidget,
-        );
-        // C. CTA del modal.
-        expect(
-          find.byKey(const Key('duplicate-phone-dialog-login-button')),
-          findsOneWidget,
-        );
-        // F. sin SnackBar, sin jerga técnica/Passenger.
-        expect(find.byType(SnackBar), findsNothing);
-        expect(find.textContaining('Passenger'), findsNothing);
-        expect(find.textContaining('409'), findsNothing);
-        expect(find.textContaining('ConflictException'), findsNothing);
-        expect(repository.loginCalls, 0);
+      // A. modal visible.
+      expect(find.byType(Dialog), findsOneWidget);
+      // B. título del modal.
+      expect(find.text('Número ya registrado'), findsOneWidget);
+      expect(
+        find.textContaining('ya tiene una cuenta en TukiTuki'),
+        findsOneWidget,
+      );
+      // C. CTA del modal.
+      expect(
+        find.byKey(const Key('duplicate-phone-dialog-login-button')),
+        findsOneWidget,
+      );
+      // F. sin SnackBar, sin jerga técnica/Passenger.
+      expect(find.byType(SnackBar), findsNothing);
+      expect(find.textContaining('Passenger'), findsNothing);
+      expect(find.textContaining('409'), findsNothing);
+      expect(find.textContaining('ConflictException'), findsNothing);
+      expect(repository.loginCalls, 0);
 
-        // G. loading restaurado (el CTA "Crear cuenta" vuelve a
-        // estar habilitado detrás del modal).
-        final button = tester.widget<FilledButton>(_submitButton);
-        expect(button.onPressed, isNotNull);
-      },
-    );
+      // G. loading restaurado (el CTA "Crear cuenta" vuelve a
+      // estar habilitado detrás del modal).
+      final button = tester.widget<FilledButton>(_submitButton);
+      expect(button.onPressed, isNotNull);
+    });
 
     testWidgets(
       'D. la X cierra el modal sin navegar y sin reenviar el registro',
@@ -214,7 +211,7 @@ void main() {
 
       expect(repository.registerCalls, 1, reason: 'no debe re-registrar');
       expect(repository.loginCalls, 2);
-      expect(find.text('ONBOARDING_START_ROUTE'), findsOneWidget);
+      expect(find.text('ABOUT_YOU_ROUTE'), findsOneWidget);
     },
   );
 
@@ -282,6 +279,11 @@ Future<void> _pumpScreen(
       GoRoute(
         path: '/login',
         builder: (context, state) => const Scaffold(body: Text('LOGIN_ROUTE')),
+      ),
+      GoRoute(
+        path: '/onboarding/about-you',
+        builder: (context, state) =>
+            const Scaffold(body: Text('ABOUT_YOU_ROUTE')),
       ),
       GoRoute(
         path: '/onboarding/start',

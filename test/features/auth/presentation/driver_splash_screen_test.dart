@@ -95,13 +95,13 @@ void main() {
 
       await _finishInitialDelay(tester);
 
-      expect(find.text('ONBOARDING_START_ROUTE'), findsOneWidget);
+      expect(find.text('ABOUT_YOU_ROUTE'), findsOneWidget);
       expect(repository.clearSessionCalls, 0);
     },
   );
 
   testWidgets(
-    'sin solicitud de conductor (404) navega al inicio del onboarding',
+    'sin solicitud de conductor (404) navega al formulario real de Sobre ti',
     (tester) async {
       final repository = _FakeAuthRepository(
         results: [_stateOf(DriverSessionKind.noProfile)],
@@ -110,7 +110,7 @@ void main() {
 
       await _finishInitialDelay(tester);
 
-      expect(find.text('ONBOARDING_START_ROUTE'), findsOneWidget);
+      expect(find.text('ABOUT_YOU_ROUTE'), findsOneWidget);
     },
   );
 
@@ -344,6 +344,11 @@ Future<void> _pumpSplash(
         path: '/onboarding/account',
         builder: (context, state) =>
             const Scaffold(body: Text('ACCOUNT_ROUTE')),
+      ),
+      GoRoute(
+        path: '/onboarding/about-you',
+        builder: (context, state) =>
+            const Scaffold(body: Text('ABOUT_YOU_ROUTE')),
       ),
       GoRoute(
         path: '/onboarding/start',

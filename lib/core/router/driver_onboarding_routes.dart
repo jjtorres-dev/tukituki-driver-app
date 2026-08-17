@@ -18,9 +18,16 @@ class DriverOnboardingRoutes {
   /// "Tu cuenta" — Paso 1: crear cuenta nueva (celular + contraseña).
   static const account = '/onboarding/account';
 
-  /// Foundation compartida por NO_PROFILE y DRAFT en este checkpoint:
-  /// todavía no existen los pasos 2-5, así que ambos casos llegan a
-  /// la misma pantalla de inicio del onboarding (ver `decisiones.md`,
+  /// "Sobre ti" — Paso 2: crea el `DriverProfile` (DRAFT) + sube la
+  /// foto de perfil. Solo NO_PROFILE llega aquí — un `DriverProfile`
+  /// ya existente (DRAFT/REJECTED) significa que el Paso 2 ya se
+  /// completó (sus campos son obligatorios para crearlo), así que
+  /// esos casos van directo a [start].
+  static const aboutYou = '/onboarding/about-you';
+
+  /// Foundation de DRAFT en este checkpoint: todavía no existen los
+  /// pasos 3-5, así que un `DriverProfile` ya creado llega a esta
+  /// misma pantalla de inicio del onboarding (ver `decisiones.md`,
   /// "no inventar lastCompletedStep").
   static const start = '/onboarding/start';
 
@@ -40,6 +47,7 @@ class DriverOnboardingRoutes {
 String routeForDriverSessionKind(DriverSessionKind kind) {
   switch (kind) {
     case DriverSessionKind.noProfile:
+      return DriverOnboardingRoutes.aboutYou;
     case DriverSessionKind.draft:
       return DriverOnboardingRoutes.start;
     case DriverSessionKind.rejected:

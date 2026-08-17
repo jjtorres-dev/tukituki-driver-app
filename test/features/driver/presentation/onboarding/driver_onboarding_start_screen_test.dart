@@ -17,7 +17,7 @@ void main() {
     await _pumpScreen(tester);
 
     expect(find.text('Completemos tu solicitud'), findsOneWidget);
-    expect(find.textContaining('Sobre ti, Tu mototaxi'), findsOneWidget);
+    expect(find.textContaining('Tu mototaxi, Tus documentos'), findsOneWidget);
   });
 
   testWidgets('cerrar sesión desloguea y navega a login', (tester) async {
