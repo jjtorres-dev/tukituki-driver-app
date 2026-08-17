@@ -3,6 +3,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:driver/features/auth/domain/authenticated_user.dart';
 import 'package:driver/features/auth/domain/driver_session_state.dart';
 import 'package:driver/features/driver/domain/driver_application.dart';
+import 'package:driver/features/driver/domain/driver_vehicle.dart';
 
 AuthenticatedUser _user({
   List<String> roles = const ['PASSENGER'],
@@ -27,6 +28,20 @@ DriverApplication _application(DriverApplicationStatus status) {
   );
 }
 
+DriverVehicle _vehicle() {
+  return const DriverVehicle(
+    id: 'vehicle-1',
+    driverProfileId: 'profile-1',
+    plate: '1234-AB',
+    brand: 'Bajaj',
+    model: 'RE 4S',
+    year: 2024,
+    color: 'Azul',
+    ownership: VehicleOwnership.owned,
+    status: VehicleStatus.draft,
+  );
+}
+
 void main() {
   group('resolveDriverApplicationState', () {
     test(
@@ -42,14 +57,17 @@ void main() {
       },
     );
 
-    test('MVP: isPhoneVerified=false + DRAFT → draft', () {
-      final state = resolveDriverApplicationState(
-        user: _user(isPhoneVerified: false),
-        application: _application(DriverApplicationStatus.draft),
-      );
+    test(
+      'MVP: isPhoneVerified=false + DRAFT sin vehículo → draftNoVehicle',
+      () {
+        final state = resolveDriverApplicationState(
+          user: _user(isPhoneVerified: false),
+          application: _application(DriverApplicationStatus.draft),
+        );
 
-      expect(state.kind, DriverSessionKind.draft);
-    });
+        expect(state.kind, DriverSessionKind.draftNoVehicle);
+      },
+    );
 
     test('MVP: isPhoneVerified=false + PENDING_REVIEW → pendingReview', () {
       final state = resolveDriverApplicationState(
@@ -60,17 +78,14 @@ void main() {
       expect(state.kind, DriverSessionKind.pendingReview);
     });
 
-    test(
-      'MVP: isPhoneVerified=false + APPROVED + rol DRIVER → approved',
-      () {
-        final state = resolveDriverApplicationState(
-          user: _user(isPhoneVerified: false, roles: const ['DRIVER']),
-          application: _application(DriverApplicationStatus.approved),
-        );
+    test('MVP: isPhoneVerified=false + APPROVED + rol DRIVER → approved', () {
+      final state = resolveDriverApplicationState(
+        user: _user(isPhoneVerified: false, roles: const ['DRIVER']),
+        application: _application(DriverApplicationStatus.approved),
+      );
 
-        expect(state.kind, DriverSessionKind.approved);
-      },
-    );
+      expect(state.kind, DriverSessionKind.approved);
+    });
 
     test('application null (404) → noProfile', () {
       final state = resolveDriverApplicationState(
@@ -81,14 +96,41 @@ void main() {
       expect(state.kind, DriverSessionKind.noProfile);
     });
 
-    test('DRAFT → draft', () {
+    test('DRAFT sin vehículo (vehicle: null) → draftNoVehicle', () {
       final state = resolveDriverApplicationState(
         user: _user(),
         application: _application(DriverApplicationStatus.draft),
       );
 
-      expect(state.kind, DriverSessionKind.draft);
+      expect(state.kind, DriverSessionKind.draftNoVehicle);
+      expect(state.vehicle, isNull);
     });
+
+    test('DRAFT con vehículo → draftWithVehicle, conserva el vehicle', () {
+      final vehicle = _vehicle();
+
+      final state = resolveDriverApplicationState(
+        user: _user(),
+        application: _application(DriverApplicationStatus.draft),
+        vehicle: vehicle,
+      );
+
+      expect(state.kind, DriverSessionKind.draftWithVehicle);
+      expect(state.vehicle, same(vehicle));
+    });
+
+    test(
+      'vehicle se ignora fuera de DRAFT (p.ej. PENDING_REVIEW no lo necesita)',
+      () {
+        final state = resolveDriverApplicationState(
+          user: _user(),
+          application: _application(DriverApplicationStatus.pendingReview),
+          vehicle: _vehicle(),
+        );
+
+        expect(state.kind, DriverSessionKind.pendingReview);
+      },
+    );
 
     test('REJECTED → rejected', () {
       final state = resolveDriverApplicationState(

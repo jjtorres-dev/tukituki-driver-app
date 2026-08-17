@@ -1,4 +1,5 @@
 import '../../driver/domain/driver_application.dart';
+import '../../driver/domain/driver_vehicle.dart';
 import 'authenticated_user.dart';
 
 /// Resultado del routing conceptual acordado para Driver App:
@@ -18,8 +19,13 @@ enum DriverSessionKind {
   /// ninguna solicitud de conductor.
   noProfile,
 
-  /// `DriverProfile.status == DRAFT`.
-  draft,
+  /// `DriverProfile.status == DRAFT` y `GET drivers/me/vehicle` →
+  /// 404. Paso 3 ("Tu mototaxi") todavía no se completó.
+  draftNoVehicle,
+
+  /// `DriverProfile.status == DRAFT` y `GET drivers/me/vehicle` →
+  /// 200. Paso 3 ya completo — va a la foundation de Paso 4.
+  draftWithVehicle,
 
   /// `DriverProfile.status == REJECTED`.
   rejected,
@@ -49,11 +55,17 @@ class DriverSessionState {
     required this.kind,
     required this.user,
     this.application,
+    this.vehicle,
   });
 
   final DriverSessionKind kind;
   final AuthenticatedUser user;
   final DriverApplication? application;
+
+  /// Solo presente cuando `kind == draftWithVehicle` (resultado de
+  /// `GET drivers/me/vehicle`). `null` en cualquier otro caso,
+  /// incluido `draftNoVehicle`.
+  final DriverVehicle? vehicle;
 }
 
 /// Función pura: dado el usuario autenticado y su solicitud de
@@ -65,9 +77,15 @@ class DriverSessionState {
 ///
 /// `user.isPhoneVerified` deliberadamente no se lee aquí (MVP sin
 /// bloqueo de OTP, ver doc de `DriverSessionKind`).
+///
+/// `vehicle` solo se usa cuando `application.status == DRAFT`, para
+/// distinguir Paso 3 de Paso 4 (ver `DriverSessionKind`). Se ignora
+/// en cualquier otro status — `AuthRepository.resolveSessionState()`
+/// no llama `GET drivers/me/vehicle` fuera de DRAFT.
 DriverSessionState resolveDriverApplicationState({
   required AuthenticatedUser user,
   required DriverApplication? application,
+  DriverVehicle? vehicle,
 }) {
   if (application == null) {
     return DriverSessionState(kind: DriverSessionKind.noProfile, user: user);
@@ -76,9 +94,12 @@ DriverSessionState resolveDriverApplicationState({
   switch (application.status) {
     case DriverApplicationStatus.draft:
       return DriverSessionState(
-        kind: DriverSessionKind.draft,
+        kind: vehicle == null
+            ? DriverSessionKind.draftNoVehicle
+            : DriverSessionKind.draftWithVehicle,
         user: user,
         application: application,
+        vehicle: vehicle,
       );
     case DriverApplicationStatus.rejected:
       return DriverSessionState(

@@ -11,7 +11,11 @@ void main() {
         DriverOnboardingRoutes.aboutYou,
       );
       expect(
-        routeForDriverSessionKind(DriverSessionKind.draft),
+        routeForDriverSessionKind(DriverSessionKind.draftNoVehicle),
+        DriverOnboardingRoutes.vehicle,
+      );
+      expect(
+        routeForDriverSessionKind(DriverSessionKind.draftWithVehicle),
         DriverOnboardingRoutes.start,
       );
       expect(
@@ -40,20 +44,21 @@ void main() {
       );
     });
 
-    test('noProfile va al formulario real de Sobre ti; draft a la foundation '
-        '(DRIVER-ONBOARDING-R3.4: ya no comparten pantalla)', () {
-      expect(
-        routeForDriverSessionKind(DriverSessionKind.noProfile),
-        isNot(routeForDriverSessionKind(DriverSessionKind.draft)),
+    test('noProfile → Sobre ti; draftNoVehicle → Tu mototaxi; '
+        'draftWithVehicle → foundation — las tres van a pantallas distintas '
+        '(DRIVER-ONBOARDING-R3.5)', () {
+      final aboutYou = routeForDriverSessionKind(DriverSessionKind.noProfile);
+      final vehicleStep = routeForDriverSessionKind(
+        DriverSessionKind.draftNoVehicle,
       );
-      expect(
-        routeForDriverSessionKind(DriverSessionKind.noProfile),
-        DriverOnboardingRoutes.aboutYou,
+      final foundation = routeForDriverSessionKind(
+        DriverSessionKind.draftWithVehicle,
       );
-      expect(
-        routeForDriverSessionKind(DriverSessionKind.draft),
-        DriverOnboardingRoutes.start,
-      );
+
+      expect(aboutYou, DriverOnboardingRoutes.aboutYou);
+      expect(vehicleStep, DriverOnboardingRoutes.vehicle);
+      expect(foundation, DriverOnboardingRoutes.start);
+      expect({aboutYou, vehicleStep, foundation}, hasLength(3));
     });
 
     test('approved es el único kind que enruta a Home', () {

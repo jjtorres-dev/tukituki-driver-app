@@ -114,9 +114,24 @@ void main() {
     },
   );
 
-  testWidgets('DRAFT navega al mismo inicio del onboarding', (tester) async {
+  testWidgets('DRAFT sin vehículo navega al formulario de Tu mototaxi', (
+    tester,
+  ) async {
     final repository = _FakeAuthRepository(
-      results: [_stateOf(DriverSessionKind.draft)],
+      results: [_stateOf(DriverSessionKind.draftNoVehicle)],
+    );
+    await _pumpSplash(tester, repository);
+
+    await _finishInitialDelay(tester);
+
+    expect(find.text('VEHICLE_ROUTE'), findsOneWidget);
+  });
+
+  testWidgets('DRAFT con vehículo navega al inicio del onboarding (Paso 4)', (
+    tester,
+  ) async {
+    final repository = _FakeAuthRepository(
+      results: [_stateOf(DriverSessionKind.draftWithVehicle)],
     );
     await _pumpSplash(tester, repository);
 
@@ -349,6 +364,11 @@ Future<void> _pumpSplash(
         path: '/onboarding/about-you',
         builder: (context, state) =>
             const Scaffold(body: Text('ABOUT_YOU_ROUTE')),
+      ),
+      GoRoute(
+        path: '/onboarding/vehicle',
+        builder: (context, state) =>
+            const Scaffold(body: Text('VEHICLE_ROUTE')),
       ),
       GoRoute(
         path: '/onboarding/start',

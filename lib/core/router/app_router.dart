@@ -14,6 +14,7 @@ import '../../features/driver/presentation/onboarding/driver_onboarding_review_s
 import '../../features/driver/presentation/onboarding/driver_onboarding_start_screen.dart';
 import '../../features/driver/presentation/onboarding/driver_onboarding_state_error_screen.dart';
 import '../../features/driver/presentation/onboarding/driver_onboarding_suspended_screen.dart';
+import '../../features/driver/presentation/onboarding/driver_onboarding_vehicle_screen.dart';
 import 'driver_onboarding_routes.dart';
 
 final appRouter = GoRouter(
@@ -34,6 +35,10 @@ final appRouter = GoRouter(
     GoRoute(
       path: DriverOnboardingRoutes.aboutYou,
       builder: (context, state) => const DriverOnboardingAboutYouScreen(),
+    ),
+    GoRoute(
+      path: DriverOnboardingRoutes.vehicle,
+      builder: (context, state) => const DriverOnboardingVehicleScreen(),
     ),
     GoRoute(
       path: DriverOnboardingRoutes.start,

@@ -8,13 +8,15 @@ import '../../../auth/data/auth_repository.dart';
 import 'driver_onboarding_progress.dart';
 import 'driver_onboarding_scaffold.dart';
 
-/// Foundation de DRAFT (`GET drivers/me` ya devuelve un perfil): el
-/// Paso 2 "Sobre ti" ya se completó (`DRIVER-ONBOARDING-R3.4`) — en
-/// este checkpoint todavía no existen los pasos "Tu mototaxi"/"Tus
-/// documentos"/"Revisar y enviar", así que DRAFT llega aquí como la
-/// siguiente pantalla real disponible (ver `decisiones.md`, "no
-/// inventar lastCompletedStep"). NO_PROFILE ya no llega aquí — va
-/// directo a la pantalla real de "Sobre ti".
+/// Foundation de DRAFT con vehículo ya registrado
+/// (`DriverSessionKind.draftWithVehicle`): los pasos "Sobre ti" y "Tu
+/// mototaxi" ya se completaron (`DRIVER-ONBOARDING-R3.4`/`R3.5`) — en
+/// este checkpoint todavía no existen los pasos "Tus documentos"/
+/// "Revisar y enviar", así que ese caso llega aquí como la siguiente
+/// pantalla real disponible (ver `decisiones.md`, "no inventar
+/// lastCompletedStep"). NO_PROFILE y DRAFT-sin-vehículo ya no llegan
+/// aquí — van directo a sus pantallas reales ("Sobre ti"/"Tu
+/// mototaxi").
 class DriverOnboardingStartScreen extends ConsumerWidget {
   const DriverOnboardingStartScreen({super.key});
 
@@ -24,9 +26,8 @@ class DriverOnboardingStartScreen extends ConsumerWidget {
       icon: Icons.assignment_outlined,
       title: 'Completemos tu solicitud',
       subtitle:
-          'Ya completaste tus datos personales. Los siguientes pasos '
-          'para convertirte en conductor estarán disponibles muy '
-          'pronto en esta app.',
+          'Ya registraste los datos de tu mototaxi. El siguiente '
+          'paso será agregar tus documentos.',
       footer: TextButton(
         key: const Key('onboarding-start-logout-button'),
         onPressed: () => _logout(context, ref),
@@ -35,13 +36,13 @@ class DriverOnboardingStartScreen extends ConsumerWidget {
       ),
       children: const [
         SizedBox(height: 4),
-        DriverOnboardingProgress(currentStep: 3),
+        DriverOnboardingProgress(currentStep: 4),
         SizedBox(height: 20),
         DriverOnboardingInfoCard(
           label: 'PRÓXIMOS PASOS',
           message:
-              'Tu mototaxi, Tus documentos y Revisar y enviar. Te '
-              'avisaremos apenas puedas continuar.',
+              'Tus documentos y Revisar y enviar. Te avisaremos '
+              'apenas puedas continuar.',
         ),
       ],
     );

@@ -8,6 +8,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:driver/features/auth/data/auth_repository.dart';
 import 'package:driver/features/auth/domain/driver_session_state.dart';
 import 'package:driver/features/driver/domain/driver_application.dart';
+import 'package:driver/features/driver/domain/driver_vehicle.dart';
 
 /// Adapter con guion (`script`): cada test define, por path, qué
 /// responder. Sin red real ni paquetes de mocking adicionales, igual
@@ -96,6 +97,26 @@ Map<String, dynamic> _driverProfileJson({
     'suspensionReason': suspensionReason,
     'suspendedAt': null,
     'suspendedByUserId': null,
+    'createdAt': '2026-08-10T12:00:00.000Z',
+    'updatedAt': '2026-08-10T12:00:00.000Z',
+  };
+}
+
+Map<String, dynamic> _driverVehicleJson({String status = 'DRAFT'}) {
+  return {
+    'id': 'vehicle-1',
+    'driverProfileId': 'profile-1',
+    'plate': '1234-AB',
+    'brand': 'Bajaj',
+    'model': 'RE 4S',
+    'year': 2024,
+    'color': 'Azul',
+    'engineNumber': null,
+    'chassisNumber': null,
+    'ownership': 'OWNED',
+    'vehicleType': 'MOTOTAXI',
+    'status': status,
+    'rejectionReason': null,
     'createdAt': '2026-08-10T12:00:00.000Z',
     'updatedAt': '2026-08-10T12:00:00.000Z',
   };
@@ -200,6 +221,45 @@ void main() {
     );
   });
 
+  group('AuthRepository.getVehicle', () {
+    test('404 se traduce a null (sin vehículo, no un error)', () async {
+      final repository = _repositoryWith({
+        'drivers/me/vehicle': (404, {'message': 'No existe'}),
+      });
+
+      final vehicle = await repository.getVehicle();
+
+      expect(vehicle, isNull);
+    });
+
+    test('200 parsea DriverVehicle', () async {
+      final repository = _repositoryWith({
+        'drivers/me/vehicle': (200, _driverVehicleJson()),
+      });
+
+      final vehicle = await repository.getVehicle();
+
+      expect(vehicle, isNotNull);
+      expect(vehicle!.id, 'vehicle-1');
+      expect(vehicle.plate, '1234-AB');
+      expect(vehicle.ownership, VehicleOwnership.owned);
+    });
+
+    test(
+      'un error distinto de 404 se relanza sin convertirse en null',
+      () async {
+        final repository = _repositoryWith({
+          'drivers/me/vehicle': (500, {'message': 'boom'}),
+        });
+
+        await expectLater(
+          repository.getVehicle(),
+          throwsA(isA<DioException>()),
+        );
+      },
+    );
+  });
+
   group('AuthRepository.resolveSessionState', () {
     test(
       'MVP (DRIVER-ONBOARDING-R3.3): teléfono no verificado SÍ llama a '
@@ -219,27 +279,34 @@ void main() {
       },
     );
 
-    test('MVP: teléfono no verificado + DRAFT → draft', () async {
-      final repository = _repositoryWith({
-        'auth/me': (200, _meJson(isPhoneVerified: false)),
-        'drivers/me': (200, _driverProfileJson(status: 'DRAFT')),
-      });
+    test(
+      'MVP: teléfono no verificado + DRAFT sin vehículo → draftNoVehicle',
+      () async {
+        final repository = _repositoryWith({
+          'auth/me': (200, _meJson(isPhoneVerified: false)),
+          'drivers/me': (200, _driverProfileJson(status: 'DRAFT')),
+          'drivers/me/vehicle': (404, null),
+        });
 
-      final state = await repository.resolveSessionState();
+        final state = await repository.resolveSessionState();
 
-      expect(state.kind, DriverSessionKind.draft);
-    });
+        expect(state.kind, DriverSessionKind.draftNoVehicle);
+      },
+    );
 
-    test('MVP: teléfono no verificado + PENDING_REVIEW → pendingReview', () async {
-      final repository = _repositoryWith({
-        'auth/me': (200, _meJson(isPhoneVerified: false)),
-        'drivers/me': (200, _driverProfileJson(status: 'PENDING_REVIEW')),
-      });
+    test(
+      'MVP: teléfono no verificado + PENDING_REVIEW → pendingReview',
+      () async {
+        final repository = _repositoryWith({
+          'auth/me': (200, _meJson(isPhoneVerified: false)),
+          'drivers/me': (200, _driverProfileJson(status: 'PENDING_REVIEW')),
+        });
 
-      final state = await repository.resolveSessionState();
+        final state = await repository.resolveSessionState();
 
-      expect(state.kind, DriverSessionKind.pendingReview);
-    });
+        expect(state.kind, DriverSessionKind.pendingReview);
+      },
+    );
 
     test(
       'MVP: teléfono no verificado + APPROVED + rol DRIVER → approved',
@@ -269,16 +336,39 @@ void main() {
       expect(state.kind, DriverSessionKind.noProfile);
     });
 
-    test('DRAFT → draft', () async {
-      final repository = _repositoryWith({
+    test('DRAFT + vehicle 404 → draftNoVehicle, SÍ consulta vehicle', () async {
+      final adapter = _ScriptedAdapter({
         'auth/me': (200, _meJson()),
         'drivers/me': (200, _driverProfileJson(status: 'DRAFT')),
+        'drivers/me/vehicle': (404, null),
       });
+      final dio = Dio()..httpClientAdapter = adapter;
+      final repository = AuthRepository(dio, const FlutterSecureStorage());
 
       final state = await repository.resolveSessionState();
 
-      expect(state.kind, DriverSessionKind.draft);
+      expect(state.kind, DriverSessionKind.draftNoVehicle);
+      expect(
+        adapter.requestedPaths,
+        containsAll(['auth/me', 'drivers/me', 'drivers/me/vehicle']),
+      );
     });
+
+    test(
+      'DRAFT + vehicle 200 → draftWithVehicle, conserva el vehicle',
+      () async {
+        final repository = _repositoryWith({
+          'auth/me': (200, _meJson()),
+          'drivers/me': (200, _driverProfileJson(status: 'DRAFT')),
+          'drivers/me/vehicle': (200, _driverVehicleJson()),
+        });
+
+        final state = await repository.resolveSessionState();
+
+        expect(state.kind, DriverSessionKind.draftWithVehicle);
+        expect(state.vehicle?.plate, '1234-AB');
+      },
+    );
 
     test('REJECTED → rejected, conserva rejectionReason', () async {
       final repository = _repositoryWith({
@@ -298,16 +388,22 @@ void main() {
       expect(state.application?.rejectionReason, 'Foto ilegible');
     });
 
-    test('PENDING_REVIEW → pendingReview', () async {
-      final repository = _repositoryWith({
-        'auth/me': (200, _meJson()),
-        'drivers/me': (200, _driverProfileJson(status: 'PENDING_REVIEW')),
-      });
+    test(
+      'PENDING_REVIEW → pendingReview, NO consulta drivers/me/vehicle',
+      () async {
+        final adapter = _ScriptedAdapter({
+          'auth/me': (200, _meJson()),
+          'drivers/me': (200, _driverProfileJson(status: 'PENDING_REVIEW')),
+        });
+        final dio = Dio()..httpClientAdapter = adapter;
+        final repository = AuthRepository(dio, const FlutterSecureStorage());
 
-      final state = await repository.resolveSessionState();
+        final state = await repository.resolveSessionState();
 
-      expect(state.kind, DriverSessionKind.pendingReview);
-    });
+        expect(state.kind, DriverSessionKind.pendingReview);
+        expect(adapter.requestedPaths, ['auth/me', 'drivers/me']);
+      },
+    );
 
     test('SUSPENDED → suspended, conserva suspensionReason', () async {
       final repository = _repositoryWith({

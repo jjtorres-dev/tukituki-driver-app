@@ -25,10 +25,16 @@ class DriverOnboardingRoutes {
   /// esos casos van directo a [start].
   static const aboutYou = '/onboarding/about-you';
 
-  /// Foundation de DRAFT en este checkpoint: todavía no existen los
-  /// pasos 3-5, así que un `DriverProfile` ya creado llega a esta
-  /// misma pantalla de inicio del onboarding (ver `decisiones.md`,
-  /// "no inventar lastCompletedStep").
+  /// "Tu mototaxi" — Paso 3: crea el `DriverVehicle` (DRAFT). Solo
+  /// `draftNoVehicle` llega aquí — un `DriverVehicle` ya existente
+  /// significa que el Paso 3 ya se completó, así que ese caso va
+  /// directo a [start] (foundation de Paso 4).
+  static const vehicle = '/onboarding/vehicle';
+
+  /// Foundation de DRAFT+vehículo ya registrado en este checkpoint:
+  /// todavía no existen los pasos 4-5, así que ese caso llega a esta
+  /// misma pantalla de inicio (ver `decisiones.md`, "no inventar
+  /// lastCompletedStep").
   static const start = '/onboarding/start';
 
   static const rejected = '/onboarding/rejected';
@@ -48,7 +54,9 @@ String routeForDriverSessionKind(DriverSessionKind kind) {
   switch (kind) {
     case DriverSessionKind.noProfile:
       return DriverOnboardingRoutes.aboutYou;
-    case DriverSessionKind.draft:
+    case DriverSessionKind.draftNoVehicle:
+      return DriverOnboardingRoutes.vehicle;
+    case DriverSessionKind.draftWithVehicle:
       return DriverOnboardingRoutes.start;
     case DriverSessionKind.rejected:
       return DriverOnboardingRoutes.rejected;

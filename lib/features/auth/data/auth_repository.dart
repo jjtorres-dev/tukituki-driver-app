@@ -5,6 +5,7 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import '../../../core/network/api_client.dart';
 import '../../../core/storage/secure_storage.dart';
 import '../../driver/domain/driver_application.dart';
+import '../../driver/domain/driver_vehicle.dart';
 import '../domain/authenticated_user.dart';
 import '../domain/driver_session_state.dart';
 
@@ -133,9 +134,36 @@ class AuthRepository {
     }
   }
 
-  /// Orquesta `getMe()` + `getDriverProfile()` en la única fuente de
-  /// verdad de routing que usan Splash y Login:
-  /// `resolveDriverApplicationState`.
+  /// `GET drivers/me/vehicle` — el vehículo del conductor, o `null`
+  /// si todavía no existe (404, mismo contrato que
+  /// `getDriverProfile`: NO_PROFILE/sin vehículo no es un error).
+  /// Cualquier otro `DioException` se relanza sin envolver.
+  Future<DriverVehicle?> getVehicle() async {
+    try {
+      final response = await _dio.get<Map<String, dynamic>>(
+        'drivers/me/vehicle',
+      );
+
+      final data = response.data;
+
+      if (data == null) {
+        throw Exception('El backend devolvió una respuesta vacía.');
+      }
+
+      return DriverVehicle.fromJson(data);
+    } on DioException catch (error) {
+      if (error.response?.statusCode == 404) {
+        return null;
+      }
+
+      rethrow;
+    }
+  }
+
+  /// Orquesta `getMe()` + `getDriverProfile()` (+ `getVehicle()`
+  /// cuando la solicitud está en DRAFT, para distinguir Paso 3 de
+  /// Paso 4 — ver `DriverSessionKind`) en la única fuente de verdad
+  /// de routing que usan Splash y Login: `resolveDriverApplicationState`.
   ///
   /// DECISIÓN DE PRODUCTO MVP (`DRIVER-ONBOARDING-R3.3`): siempre se
   /// consulta `drivers/me`, sin importar `isPhoneVerified`. La
@@ -146,7 +174,15 @@ class AuthRepository {
 
     final application = await getDriverProfile();
 
-    return resolveDriverApplicationState(user: user, application: application);
+    final vehicle = application?.status == DriverApplicationStatus.draft
+        ? await getVehicle()
+        : null;
+
+    return resolveDriverApplicationState(
+      user: user,
+      application: application,
+      vehicle: vehicle,
+    );
   }
 
   /// `POST auth/otp/request` — preparado para cuando exista
