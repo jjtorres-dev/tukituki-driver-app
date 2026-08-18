@@ -1,13 +1,16 @@
 /// Resumen mínimo del Passenger asignado, tal como lo expone
 /// `drivers/me/rides/active` / `drivers/me/rides/:id` desde el
-/// checkpoint Backend D0.
+/// checkpoint Backend D0, extendido con `lastNameInitial` en R4.3
+/// (`CROSS-APP-R4.3A`).
 ///
-/// Deliberadamente NO incluye lastName/phone/email/document: Backend
-/// no los expone en este contrato y no deben inventarse en Driver.
+/// Deliberadamente NO incluye lastName completo/phone/email/document:
+/// Backend no los expone en este contrato y no deben inventarse en
+/// Driver.
 class AssignedPassenger {
   const AssignedPassenger({
     required this.profileId,
     required this.firstName,
+    this.lastNameInitial = '',
     required this.ratingAverage,
     required this.ratingCount,
     this.photoUrl,
@@ -15,6 +18,7 @@ class AssignedPassenger {
 
   final String profileId;
   final String firstName;
+  final String lastNameInitial;
   final String? photoUrl;
 
   /// String tal como la envía Backend (numeric(3,2)), nunca redondeada
@@ -47,6 +51,7 @@ class AssignedPassenger {
     return AssignedPassenger(
       profileId: json['profileId']?.toString() ?? '',
       firstName: json['firstName']?.toString() ?? '',
+      lastNameInitial: json['lastNameInitial']?.toString() ?? '',
       photoUrl: json['photoUrl']?.toString(),
       ratingAverage: json['ratingAverage']?.toString() ?? '0.00',
       ratingCount: _tryParseInt(json['ratingCount']) ?? 0,

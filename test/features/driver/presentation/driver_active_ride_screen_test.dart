@@ -370,6 +370,32 @@ void main() {
       expect(find.text('Pide el código de 4 dígitos a Maycol'), findsOneWidget);
     });
 
+    testWidgets(
+      'B2 (R4.3): con lastNameInitial real, muestra el nombre compacto "Mark L."',
+      (tester) async {
+        final ride = _rideFixture(
+          status: 'DRIVER_ARRIVED',
+          passenger: const AssignedPassenger(
+            profileId: 'passenger-1',
+            firstName: 'Mark',
+            lastNameInitial: 'L.',
+            ratingAverage: '4.85',
+            ratingCount: 32,
+          ),
+        );
+        final rides = _FakeRidesRepository(activeRideQueue: [ride]);
+
+        await _pumpActiveRide(tester, rides: rides);
+        await tester.pump();
+
+        expect(
+          find.text('Pide el código de 4 dígitos a Mark L.'),
+          findsOneWidget,
+        );
+        expect(find.text('Mark L.'), findsOneWidget);
+      },
+    );
+
     testWidgets('C: muestra fallback neutral si passenger es null', (
       tester,
     ) async {

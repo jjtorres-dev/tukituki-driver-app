@@ -17,6 +17,7 @@ class DriverRideOffer {
     this.destinationLatitude,
     this.destinationLongitude,
     this.passengerFirstName,
+    this.passengerLastNameInitial,
   });
 
   final String id;
@@ -68,6 +69,11 @@ class DriverRideOffer {
   /// deliberadamente NUNCA se completa con un placeholder tipo
   /// "Pasajero": la UI simplemente omite la fila del nombre.
   final String? passengerFirstName;
+
+  /// Inicial del apellido del Passenger, ya derivada por Backend
+  /// (`ride.passenger.lastNameInitial`, p.ej. "L."). Null si Backend no
+  /// la entregó — nunca se completa con un placeholder.
+  final String? passengerLastNameInitial;
 
   bool get hasProposal => status == 'PROPOSED' && proposedFare != null;
 
@@ -133,6 +139,9 @@ class DriverRideOffer {
       destinationLatitude: _tryParseCoordinate(destination['latitude']),
       destinationLongitude: _tryParseCoordinate(destination['longitude']),
       passengerFirstName: _tryParseNonEmptyString(passenger?['firstName']),
+      passengerLastNameInitial: _tryParseNonEmptyString(
+        passenger?['lastNameInitial'],
+      ),
     );
   }
 }

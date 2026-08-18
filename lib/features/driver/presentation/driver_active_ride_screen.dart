@@ -9,6 +9,7 @@ import 'package:go_router/go_router.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart'
     show BitmapDescriptor, LatLng, Marker, MarkerId;
 
+import '../../../core/display_name.dart';
 import '../../../core/theme/driver_palette.dart';
 import '../data/driver_operations_repository.dart';
 import '../data/driver_rides_repository.dart';
@@ -1866,7 +1867,10 @@ class _DriverActiveRideScreenState extends ConsumerState<DriverActiveRideScreen>
                         crossAxisAlignment: CrossAxisAlignment.stretch,
                         children: [
                           _ArrivedStatusHeader(
-                            passengerFirstName: ride.passenger?.firstName,
+                            passengerDisplayName: displayCompactNameFromInitial(
+                              ride.passenger?.firstName,
+                              ride.passenger?.lastNameInitial,
+                            ),
                           ),
 
                           const SizedBox(height: 16),
@@ -2259,7 +2263,10 @@ class _PassengerCard extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  currentPassenger.firstName,
+                  displayCompactNameFromInitial(
+                    currentPassenger.firstName,
+                    currentPassenger.lastNameInitial,
+                  ),
                   overflow: TextOverflow.ellipsis,
                   style: const TextStyle(
                     fontSize: 17,
@@ -2707,15 +2714,15 @@ class _WaitingActiveCard extends StatelessWidget {
 // ---------------------------------------------------------------------
 
 class _ArrivedStatusHeader extends StatelessWidget {
-  const _ArrivedStatusHeader({required this.passengerFirstName});
+  const _ArrivedStatusHeader({required this.passengerDisplayName});
 
-  final String? passengerFirstName;
+  final String passengerDisplayName;
 
   @override
   Widget build(BuildContext context) {
-    final name = passengerFirstName;
+    final name = passengerDisplayName;
 
-    final subtitle = (name == null || name.isEmpty)
+    final subtitle = name.isEmpty
         ? 'Pide al pasajero su código de 4 dígitos'
         : 'Pide el código de 4 dígitos a $name';
 

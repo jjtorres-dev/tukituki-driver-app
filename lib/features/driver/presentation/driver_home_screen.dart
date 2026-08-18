@@ -8,6 +8,7 @@ import 'package:go_router/go_router.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart'
     show BitmapDescriptor, LatLng, Marker, MarkerId;
 
+import '../../../core/display_name.dart';
 import '../../../core/storage/secure_storage.dart';
 import '../../../core/theme/driver_palette.dart';
 import '../../auth/data/auth_repository.dart';
@@ -3179,13 +3180,18 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
       color: DriverPalette.brown.withValues(alpha: 0.6),
     );
 
-    final header = offer.passengerFirstName != null
+    final passengerDisplayName = displayCompactNameFromInitial(
+      offer.passengerFirstName,
+      offer.passengerLastNameInitial,
+    );
+
+    final header = passengerDisplayName.isNotEmpty
         ? Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Expanded(
                 child: Text(
-                  offer.passengerFirstName!,
+                  passengerDisplayName,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: const TextStyle(

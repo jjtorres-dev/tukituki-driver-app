@@ -1940,6 +1940,45 @@ void main() {
     );
 
     testWidgets(
+      'K2 (R4.3): con lastNameInitial real, la tarjeta muestra el nombre compacto "Mark L."',
+      (tester) async {
+        final rides = _FakeRidesRepository();
+        final operations = _FakeOperationsRepository(
+          statusQueue: [
+            const DriverOperationalState(
+              status: DriverOperationalStatus.available,
+            ),
+          ],
+        );
+        final offers = _FakeOffersRepository(
+          pendingProposalsQueue: [const <DriverPendingProposal>[]],
+          activeOffersQueue: [
+            [
+              _offerFixture(
+                id: 'offer-1',
+                passengerFirstName: 'Mark',
+                passengerLastNameInitial: 'L.',
+              ),
+            ],
+          ],
+        );
+
+        await _pumpHome(
+          tester,
+          rides: rides,
+          operations: operations,
+          offers: offers,
+        );
+        await tester.pump();
+        await _openSolicitudesTab(tester);
+
+        expect(find.text('Mark L.'), findsOneWidget);
+        expect(find.textContaining('DNI'), findsNothing);
+        expect(find.textContaining('@'), findsNothing);
+      },
+    );
+
+    testWidgets(
       'L: sin firstName (Backend no lo entregó), la tarjeta NO inventa un placeholder tipo "Pasajero"',
       (tester) async {
         final rides = _FakeRidesRepository();
@@ -4617,6 +4656,7 @@ DriverRideOffer _offerFixture({
   String originAddress = 'Origen',
   String destinationAddress = 'Destino',
   String? passengerFirstName,
+  String? passengerLastNameInitial,
 }) {
   return DriverRideOffer(
     id: id,
@@ -4632,6 +4672,7 @@ DriverRideOffer _offerFixture({
     destinationAddress: destinationAddress,
     expiresAt: DateTime.utc(2030),
     passengerFirstName: passengerFirstName,
+    passengerLastNameInitial: passengerLastNameInitial,
   );
 }
 
