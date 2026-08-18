@@ -142,17 +142,19 @@ void main() {
     },
   );
 
-  testWidgets('DRAFT con documentos completos navega al inicio del onboarding '
-      '(Paso 5)', (tester) async {
-    final repository = _FakeAuthRepository(
-      results: [_stateOf(DriverSessionKind.draftDocumentsComplete)],
-    );
-    await _pumpSplash(tester, repository);
+  testWidgets(
+    'DRAFT con documentos completos navega a Revisar y enviar (Paso 5)',
+    (tester) async {
+      final repository = _FakeAuthRepository(
+        results: [_stateOf(DriverSessionKind.draftDocumentsComplete)],
+      );
+      await _pumpSplash(tester, repository);
 
-    await _finishInitialDelay(tester);
+      await _finishInitialDelay(tester);
 
-    expect(find.text('ONBOARDING_START_ROUTE'), findsOneWidget);
-  });
+      expect(find.text('SUBMIT_REVIEW_ROUTE'), findsOneWidget);
+    },
+  );
 
   testWidgets('REJECTED navega a la pantalla de corrección', (tester) async {
     final repository = _FakeAuthRepository(
@@ -388,6 +390,11 @@ Future<void> _pumpSplash(
         path: '/onboarding/documents',
         builder: (context, state) =>
             const Scaffold(body: Text('DOCUMENTS_ROUTE')),
+      ),
+      GoRoute(
+        path: '/onboarding/review',
+        builder: (context, state) =>
+            const Scaffold(body: Text('SUBMIT_REVIEW_ROUTE')),
       ),
       GoRoute(
         path: '/onboarding/start',

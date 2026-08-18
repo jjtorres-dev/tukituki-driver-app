@@ -313,6 +313,12 @@ class _DocumentCardState {
   /// complete exitoso) o error genérico.
   String? statusMessage;
 
+  /// `DRIVER-ONBOARDING-R3.7`: el usuario pidió editar la metadata de
+  /// un documento ya completo (botón "Editar datos") sin reemplazar
+  /// el archivo. Se resetea a `false` tras un guardado exitoso que
+  /// deje la tarjeta completa de nuevo.
+  bool editingMetadata = false;
+
   bool get requiresExpiresAt =>
       type == DriverDocumentType.driverLicense ||
       type == DriverDocumentType.soat;
@@ -708,6 +714,7 @@ class _DriverOnboardingDocumentsScreenState
       setState(() {
         card.persisted = updated;
         card.statusMessage = null;
+        card.editingMetadata = false;
       });
     } on DioException catch (_) {
       if (!mounted) {
@@ -741,19 +748,41 @@ class _DriverOnboardingDocumentsScreenState
     }
   }
 
-  void _continue() {
+  Future<void> _continue() async {
     if (!_allComplete || _anyCardBusy) {
       return;
     }
 
-    context.go(DriverOnboardingRoutes.start);
+    final authRepository = ref.read(authRepositoryProvider);
+    final freshState = await authRepository.resolveSessionState();
+
+    if (!mounted) {
+      return;
+    }
+
+    goToDriverSessionRoute(context, freshState);
   }
 
-  Future<void> _exitToLogin() async {
+  /// Reachable both desde el routing normal de onboarding
+  /// (`context.go`, sin pila) y empujada desde "Editar" en "Revisar y
+  /// enviar" (`context.push`, con pila — `DRIVER-ONBOARDING-R3.7`).
+  /// `Navigator.canPop()` distingue ambos casos sin necesitar
+  /// argumentos nuevos: si hay pila, solo vuelve atrás; si no, es el
+  /// comportamiento de siempre (cerrar sesión).
+  Future<void> _handleBack() async {
     if (_anyCardBusy) {
       return;
     }
 
+    if (Navigator.of(context).canPop()) {
+      context.pop();
+      return;
+    }
+
+    await _exitToLogin();
+  }
+
+  Future<void> _exitToLogin() async {
     final repository = ref.read(authRepositoryProvider);
 
     try {
@@ -782,7 +811,7 @@ class _DriverOnboardingDocumentsScreenState
             Icons.arrow_back_rounded,
             color: DriverPalette.greenPrimary,
           ),
-          onPressed: _anyCardBusy ? null : _exitToLogin,
+          onPressed: _anyCardBusy ? null : _handleBack,
         ),
       ),
       body: SafeArea(top: false, child: _buildBody()),
@@ -943,24 +972,39 @@ class _DriverOnboardingDocumentsScreenState
               ),
             ),
           ],
-          if (card.isComplete) ...[
+          if (card.isComplete && !card.editingMetadata) ...[
             const SizedBox(height: 12),
             Row(
               key: Key('documents-$slug-complete-badge'),
-              children: const [
-                Icon(
+              children: [
+                const Icon(
                   Icons.check_circle,
                   color: DriverPalette.greenAvailable,
                   size: 18,
                 ),
-                SizedBox(width: 6),
-                Text(
+                const SizedBox(width: 6),
+                const Text(
                   'Documento cargado',
                   style: TextStyle(
                     color: DriverPalette.greenPrimary,
                     fontSize: 13,
                     fontWeight: FontWeight.w700,
                   ),
+                ),
+                const Spacer(),
+                TextButton(
+                  key: Key('documents-$slug-edit-data-button'),
+                  onPressed: card.saving || card.picking
+                      ? null
+                      : () => setState(() {
+                          card.editingMetadata = true;
+                        }),
+                  style: TextButton.styleFrom(
+                    foregroundColor: DriverPalette.greenAvailable,
+                    padding: EdgeInsets.zero,
+                    minimumSize: const Size(0, 32),
+                  ),
+                  child: const Text('Editar datos'),
                 ),
               ],
             ),

@@ -20,7 +20,7 @@ void main() {
       );
       expect(
         routeForDriverSessionKind(DriverSessionKind.draftDocumentsComplete),
-        DriverOnboardingRoutes.start,
+        DriverOnboardingRoutes.review,
       );
       expect(
         routeForDriverSessionKind(DriverSessionKind.rejected),
@@ -66,7 +66,7 @@ void main() {
       expect(aboutYou, DriverOnboardingRoutes.aboutYou);
       expect(vehicleStep, DriverOnboardingRoutes.vehicle);
       expect(documentsStep, DriverOnboardingRoutes.documents);
-      expect(foundation, DriverOnboardingRoutes.start);
+      expect(foundation, DriverOnboardingRoutes.review);
       expect({aboutYou, vehicleStep, documentsStep, foundation}, hasLength(4));
     });
 

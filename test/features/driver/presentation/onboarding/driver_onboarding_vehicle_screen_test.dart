@@ -7,7 +7,10 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
 
+import 'package:driver/core/router/driver_onboarding_routes.dart';
 import 'package:driver/features/auth/data/auth_repository.dart';
+import 'package:driver/features/auth/domain/authenticated_user.dart';
+import 'package:driver/features/auth/domain/driver_session_state.dart';
 import 'package:driver/features/driver/data/driver_vehicle_repository.dart';
 import 'package:driver/features/driver/domain/driver_vehicle.dart';
 import 'package:driver/features/driver/presentation/onboarding/driver_onboarding_progress.dart';
@@ -279,7 +282,7 @@ void main() {
       await tester.pumpAndSettle();
     });
 
-    testWidgets('V. POST exitoso navega a Paso 4 (START_ROUTE)', (
+    testWidgets('V. POST exitoso navega a Paso 4 (DOCUMENTS_ROUTE)', (
       tester,
     ) async {
       await _pumpScreen(tester);
@@ -288,7 +291,7 @@ void main() {
       await _selectOwnership(tester, 'Propio');
       await _tapSubmit(tester);
 
-      expect(find.text('START_ROUTE'), findsOneWidget);
+      expect(find.text('DOCUMENTS_ROUTE'), findsOneWidget);
     });
 
     testWidgets('W. error en POST: no navega, conserva los valores', (
@@ -357,7 +360,7 @@ void main() {
         await _tapSubmit(tester);
 
         expect(authRepository.getVehicleCalls, 1);
-        expect(find.text('START_ROUTE'), findsOneWidget);
+        expect(find.text('DOCUMENTS_ROUTE'), findsOneWidget);
       },
     );
 
@@ -404,6 +407,86 @@ void main() {
       expect(find.text('LOGIN_ROUTE'), findsOneWidget);
     });
   });
+
+  group(
+    'DriverOnboardingVehicleScreen — modo EDIT (DRIVER-ONBOARDING-R3.7)',
+    () {
+      DriverVehicle editVehicle() {
+        return const DriverVehicle(
+          id: 'vehicle-1',
+          driverProfileId: 'profile-1',
+          plate: 'J-2637',
+          brand: 'Honda',
+          model: 'Mototaxi',
+          year: 2022,
+          color: 'Azul',
+          ownership: VehicleOwnership.owned,
+          status: VehicleStatus.draft,
+        );
+      }
+
+      testWidgets('precarga los campos del vehículo existente', (tester) async {
+        await _pumpScreen(
+          tester,
+          pushedFromReviewArgs: DriverOnboardingVehicleScreenArgs(
+            vehicle: editVehicle(),
+          ),
+        );
+
+        expect(find.widgetWithText(TextFormField, 'J-2637'), findsOneWidget);
+        expect(find.widgetWithText(TextFormField, 'Honda'), findsOneWidget);
+        expect(find.widgetWithText(TextFormField, 'Mototaxi'), findsOneWidget);
+        expect(find.widgetWithText(TextFormField, '2022'), findsOneWidget);
+        expect(find.widgetWithText(TextFormField, 'Azul'), findsOneWidget);
+        expect(find.text('Guardar cambios'), findsOneWidget);
+      });
+
+      testWidgets(
+        'guardar cambios llama updateVehicle (PATCH), nunca createVehicle',
+        (tester) async {
+          final vehicleRepository = _FakeDriverVehicleRepository();
+          await _pumpScreen(
+            tester,
+            vehicleRepository: vehicleRepository,
+            pushedFromReviewArgs: DriverOnboardingVehicleScreenArgs(
+              vehicle: editVehicle(),
+            ),
+          );
+
+          await tester.enterText(_colorField, 'Rojo');
+          await tester.ensureVisible(_submitButton);
+          await tester.tap(_submitButton);
+          await tester.pump();
+          await tester.pump(const Duration(milliseconds: 20));
+
+          expect(vehicleRepository.updateCalls, 1);
+          expect(vehicleRepository.createCalls, 0);
+        },
+      );
+
+      testWidgets(
+        'la flecha de volver hace pop (no cierra sesión) cuando llegó '
+        'empujada desde Revisar y enviar',
+        (tester) async {
+          final authRepository = _FakeAuthRepository();
+          await _pumpScreen(
+            tester,
+            authRepository: authRepository,
+            pushedFromReviewArgs: DriverOnboardingVehicleScreenArgs(
+              vehicle: editVehicle(),
+            ),
+          );
+
+          await tester.tap(find.byKey(const Key('vehicle-back-button')));
+          await tester.pumpAndSettle();
+
+          expect(authRepository.logoutCalls, 0);
+          expect(find.text('open'), findsOneWidget);
+          expect(find.text('LOGIN_ROUTE'), findsNothing);
+        },
+      );
+    },
+  );
 }
 
 DriverVehicle _sampleVehicle() {
@@ -471,13 +554,33 @@ Future<void> _pumpScreen(
   WidgetTester tester, {
   _FakeAuthRepository? authRepository,
   _FakeDriverVehicleRepository? vehicleRepository,
+  DriverOnboardingVehicleScreenArgs? pushedFromReviewArgs,
 }) async {
   final router = GoRouter(
-    initialLocation: '/onboarding/vehicle',
+    initialLocation: pushedFromReviewArgs != null
+        ? '/root'
+        : '/onboarding/vehicle',
     routes: [
       GoRoute(
+        path: '/root',
+        builder: (context, state) => Scaffold(
+          body: Center(
+            child: TextButton(
+              key: const Key('open-vehicle-from-review'),
+              onPressed: () => context.push(
+                DriverOnboardingRoutes.vehicle,
+                extra: pushedFromReviewArgs,
+              ),
+              child: const Text('open'),
+            ),
+          ),
+        ),
+      ),
+      GoRoute(
         path: '/onboarding/vehicle',
-        builder: (context, state) => const DriverOnboardingVehicleScreen(),
+        builder: (context, state) => DriverOnboardingVehicleScreen(
+          args: state.extra as DriverOnboardingVehicleScreenArgs?,
+        ),
       ),
       GoRoute(
         path: '/login',
@@ -486,6 +589,11 @@ Future<void> _pumpScreen(
       GoRoute(
         path: '/onboarding/start',
         builder: (context, state) => const Scaffold(body: Text('START_ROUTE')),
+      ),
+      GoRoute(
+        path: '/onboarding/documents',
+        builder: (context, state) =>
+            const Scaffold(body: Text('DOCUMENTS_ROUTE')),
       ),
     ],
   );
@@ -505,6 +613,11 @@ Future<void> _pumpScreen(
     ),
   );
   await tester.pump();
+
+  if (pushedFromReviewArgs != null) {
+    await tester.tap(find.byKey(const Key('open-vehicle-from-review')));
+    await tester.pumpAndSettle();
+  }
 }
 
 class _FakeAuthRepository extends AuthRepository {
@@ -525,6 +638,24 @@ class _FakeAuthRepository extends AuthRepository {
     getVehicleCalls += 1;
 
     return getVehicleResult;
+  }
+
+  /// La pantalla llama esto tras guardar (`_submit()`,
+  /// `DRIVER-ONBOARDING-R3.7`) para decidir a dónde navegar en vez de
+  /// hardcodear una ruta. `draftDocumentsIncomplete` es el siguiente
+  /// paso real tras completar "Tu mototaxi" sin documentos todavía.
+  @override
+  Future<DriverSessionState> resolveSessionState() async {
+    return const DriverSessionState(
+      kind: DriverSessionKind.draftDocumentsIncomplete,
+      user: AuthenticatedUser(
+        id: 'user-1',
+        phoneE164: '+51987654321',
+        roles: ['PASSENGER'],
+        status: 'ACTIVE',
+        isPhoneVerified: true,
+      ),
+    );
   }
 }
 
@@ -576,6 +707,38 @@ class _FakeDriverVehicleRepository extends DriverVehicleRepository {
       year: year,
       color: color,
       ownership: ownership,
+      status: VehicleStatus.draft,
+    );
+  }
+
+  int updateCalls = 0;
+  String? lastUpdatePlate;
+
+  @override
+  Future<DriverVehicle> updateVehicle({
+    String? plate,
+    String? brand,
+    String? model,
+    int? year,
+    String? color,
+    VehicleOwnership? ownership,
+  }) async {
+    updateCalls += 1;
+    lastUpdatePlate = plate;
+
+    if (error case final e?) {
+      throw e;
+    }
+
+    return DriverVehicle(
+      id: 'vehicle-1',
+      driverProfileId: 'profile-1',
+      plate: plate ?? '',
+      brand: brand ?? '',
+      model: model ?? '',
+      year: year ?? 0,
+      color: color ?? '',
+      ownership: ownership ?? VehicleOwnership.owned,
       status: VehicleStatus.draft,
     );
   }

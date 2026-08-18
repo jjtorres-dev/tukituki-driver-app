@@ -1,5 +1,6 @@
 import 'package:go_router/go_router.dart';
 
+import '../../features/auth/domain/driver_session_state.dart';
 import '../../features/auth/presentation/create_account_screen.dart';
 import '../../features/auth/presentation/driver_splash_screen.dart';
 import '../../features/auth/presentation/login_screen.dart';
@@ -14,6 +15,7 @@ import '../../features/driver/presentation/onboarding/driver_onboarding_rejected
 import '../../features/driver/presentation/onboarding/driver_onboarding_review_screen.dart';
 import '../../features/driver/presentation/onboarding/driver_onboarding_start_screen.dart';
 import '../../features/driver/presentation/onboarding/driver_onboarding_state_error_screen.dart';
+import '../../features/driver/presentation/onboarding/driver_onboarding_submit_review_screen.dart';
 import '../../features/driver/presentation/onboarding/driver_onboarding_suspended_screen.dart';
 import '../../features/driver/presentation/onboarding/driver_onboarding_vehicle_screen.dart';
 import 'driver_onboarding_routes.dart';
@@ -35,15 +37,25 @@ final appRouter = GoRouter(
     ),
     GoRoute(
       path: DriverOnboardingRoutes.aboutYou,
-      builder: (context, state) => const DriverOnboardingAboutYouScreen(),
+      builder: (context, state) => DriverOnboardingAboutYouScreen(
+        args: state.extra as DriverOnboardingAboutYouScreenArgs?,
+      ),
     ),
     GoRoute(
       path: DriverOnboardingRoutes.vehicle,
-      builder: (context, state) => const DriverOnboardingVehicleScreen(),
+      builder: (context, state) => DriverOnboardingVehicleScreen(
+        args: state.extra as DriverOnboardingVehicleScreenArgs?,
+      ),
     ),
     GoRoute(
       path: DriverOnboardingRoutes.documents,
       builder: (context, state) => const DriverOnboardingDocumentsScreen(),
+    ),
+    GoRoute(
+      path: DriverOnboardingRoutes.review,
+      builder: (context, state) => DriverOnboardingSubmitReviewScreen(
+        initialState: state.extra as DriverSessionState?,
+      ),
     ),
     GoRoute(
       path: DriverOnboardingRoutes.start,

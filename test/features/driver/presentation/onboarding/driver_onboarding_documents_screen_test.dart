@@ -10,7 +10,10 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
 import 'package:image_picker/image_picker.dart';
 
+import 'package:driver/core/router/driver_onboarding_routes.dart';
 import 'package:driver/features/auth/data/auth_repository.dart';
+import 'package:driver/features/auth/domain/authenticated_user.dart';
+import 'package:driver/features/auth/domain/driver_session_state.dart';
 import 'package:driver/features/driver/data/driver_document_repository.dart';
 import 'package:driver/features/driver/data/driver_photo_uploader.dart';
 import 'package:driver/features/driver/data/driver_storage_repository.dart';
@@ -802,7 +805,7 @@ void main() {
       await tester.tap(continueButton);
       await tester.pumpAndSettle();
 
-      expect(find.text('START_ROUTE'), findsOneWidget);
+      expect(find.text('SUBMIT_REVIEW_ROUTE'), findsOneWidget);
     });
   });
 
@@ -862,6 +865,106 @@ void main() {
       expect(find.textContaining('Bearer'), findsNothing);
     });
   });
+
+  group('DriverOnboardingDocumentsScreen — Editar datos '
+      '(DRIVER-ONBOARDING-R3.7)', () {
+    testWidgets(
+      'un documento completo muestra "Editar datos" además de "Cambiar"',
+      (tester) async {
+        final authRepository = _FakeAuthRepository(
+          documents: [_completeDocument(DriverDocumentType.soat)],
+        );
+        await _pumpScreen(tester, authRepository: authRepository);
+
+        expect(
+          find.byKey(const Key('documents-soat-edit-data-button')),
+          findsOneWidget,
+        );
+        expect(
+          find.byKey(const Key('documents-soat-change-button')),
+          findsOneWidget,
+        );
+      },
+    );
+
+    testWidgets('"Editar datos" muestra el formulario prefilled sin volver a '
+        'pedir el archivo', (tester) async {
+      final authRepository = _FakeAuthRepository(
+        documents: [_completeDocument(DriverDocumentType.soat)],
+      );
+      await _pumpScreen(tester, authRepository: authRepository);
+
+      await tester.tap(
+        find.byKey(const Key('documents-soat-edit-data-button')),
+      );
+      await tester.pump();
+
+      final numberField = tester.widget<TextFormField>(
+        find.byKey(const Key('documents-soat-number-field')),
+      );
+      expect(numberField.controller?.text, 'ABC123');
+      expect(
+        find.byKey(const Key('documents-soat-save-button')),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets(
+      'guardar desde "Editar datos" solo hace PATCH, nunca presign/PUT',
+      (tester) async {
+        final authRepository = _FakeAuthRepository(
+          documents: [_completeDocument(DriverDocumentType.soat)],
+        );
+        final storageRepository = _FakeDriverStorageRepository();
+        final uploader = _FakeDriverPhotoUploader();
+        final documentRepository = _FakeDriverDocumentRepository();
+        await _pumpScreen(
+          tester,
+          authRepository: authRepository,
+          storageRepository: storageRepository,
+          photoUploader: uploader,
+          documentRepository: documentRepository,
+        );
+
+        await tester.tap(
+          find.byKey(const Key('documents-soat-edit-data-button')),
+        );
+        await tester.pump();
+
+        await tester.enterText(
+          find.byKey(const Key('documents-soat-number-field')),
+          'XYZ999',
+        );
+        await _tapSave(tester, 'soat');
+
+        expect(storageRepository.presignCalls, 0);
+        expect(uploader.uploadCalls, 0);
+        expect(documentRepository.updateCalls, 1);
+        expect(documentRepository.lastDocumentNumber, 'XYZ999');
+        expect(
+          find.byKey(const Key('documents-soat-complete-badge')),
+          findsOneWidget,
+        );
+      },
+    );
+
+    testWidgets('la flecha de volver hace pop (no cierra sesión) cuando llegó '
+        'empujada desde Revisar y enviar', (tester) async {
+      final authRepository = _FakeAuthRepository();
+      await _pumpScreen(
+        tester,
+        authRepository: authRepository,
+        pushedFromReview: true,
+      );
+
+      await tester.tap(find.byKey(const Key('documents-back-button')));
+      await tester.pumpAndSettle();
+
+      expect(authRepository.logoutCalls, 0);
+      expect(find.text('open'), findsOneWidget);
+      expect(find.text('LOGIN_ROUTE'), findsNothing);
+    });
+  });
 }
 
 Future<void> _pickFile(WidgetTester tester, String slug, String option) async {
@@ -898,10 +1001,23 @@ Future<void> _pumpScreen(
   _FakeDriverStorageRepository? storageRepository,
   _FakeDriverPhotoUploader? photoUploader,
   _FakeDriverDocumentRepository? documentRepository,
+  bool pushedFromReview = false,
 }) async {
   final router = GoRouter(
-    initialLocation: '/onboarding/documents',
+    initialLocation: pushedFromReview ? '/root' : '/onboarding/documents',
     routes: [
+      GoRoute(
+        path: '/root',
+        builder: (context, state) => Scaffold(
+          body: Center(
+            child: TextButton(
+              key: const Key('open-documents-from-review'),
+              onPressed: () => context.push(DriverOnboardingRoutes.documents),
+              child: const Text('open'),
+            ),
+          ),
+        ),
+      ),
       GoRoute(
         path: '/onboarding/documents',
         builder: (context, state) => const DriverOnboardingDocumentsScreen(),
@@ -913,6 +1029,11 @@ Future<void> _pumpScreen(
       GoRoute(
         path: '/onboarding/start',
         builder: (context, state) => const Scaffold(body: Text('START_ROUTE')),
+      ),
+      GoRoute(
+        path: '/onboarding/review',
+        builder: (context, state) =>
+            const Scaffold(body: Text('SUBMIT_REVIEW_ROUTE')),
       ),
     ],
   );
@@ -939,6 +1060,11 @@ Future<void> _pumpScreen(
   );
   await tester.pump();
   await tester.pump();
+
+  if (pushedFromReview) {
+    await tester.tap(find.byKey(const Key('open-documents-from-review')));
+    await tester.pumpAndSettle();
+  }
 }
 
 class _FakeAuthRepository extends AuthRepository {
@@ -986,6 +1112,41 @@ class _FakeAuthRepository extends AuthRepository {
     }
 
     return documents;
+  }
+
+  /// La pantalla llama esto al pulsar "Continuar" (`_continue()`,
+  /// `DRIVER-ONBOARDING-R3.7`) para decidir a dónde navegar en vez de
+  /// hardcodear una ruta. Devuelve `draftDocumentsComplete` si los 3
+  /// documentos requeridos ya están completos, replicando el mismo
+  /// criterio que `resolveDriverApplicationState` real.
+  @override
+  Future<DriverSessionState> resolveSessionState() async {
+    final hasAllRequired = requiredDriverOnboardingDocumentTypes.every((type) {
+      DriverDocument? match;
+
+      for (final document in documents) {
+        if (document.type == type) {
+          match = document;
+          break;
+        }
+      }
+
+      return isDriverDocumentComplete(match);
+    });
+
+    return DriverSessionState(
+      kind: hasAllRequired
+          ? DriverSessionKind.draftDocumentsComplete
+          : DriverSessionKind.draftDocumentsIncomplete,
+      user: const AuthenticatedUser(
+        id: 'user-1',
+        phoneE164: '+51987654321',
+        roles: ['PASSENGER'],
+        status: 'ACTIVE',
+        isPhoneVerified: true,
+      ),
+      documents: documents,
+    );
   }
 }
 

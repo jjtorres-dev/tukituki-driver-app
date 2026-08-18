@@ -11,7 +11,10 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
 import 'package:image_picker/image_picker.dart';
 
+import 'package:driver/core/router/driver_onboarding_routes.dart';
 import 'package:driver/features/auth/data/auth_repository.dart';
+import 'package:driver/features/auth/domain/authenticated_user.dart';
+import 'package:driver/features/auth/domain/driver_session_state.dart';
 import 'package:driver/features/driver/data/driver_photo_uploader.dart';
 import 'package:driver/features/driver/data/driver_profile_repository.dart';
 import 'package:driver/features/driver/data/driver_storage_repository.dart';
@@ -386,7 +389,7 @@ void main() {
 
       expect(uploader.uploadCalls, 1);
       expect(storageRepository.completeCalls, 1);
-      expect(find.text('START_ROUTE'), findsOneWidget);
+      expect(find.text('VEHICLE_ROUTE'), findsOneWidget);
     });
 
     testWidgets('Y. si POST falla, no se llama presign', (tester) async {
@@ -498,7 +501,7 @@ void main() {
           1,
           reason: 'no debe repetir el POST tras el reintento',
         );
-        expect(find.text('START_ROUTE'), findsOneWidget);
+        expect(find.text('VEHICLE_ROUTE'), findsOneWidget);
       },
     );
 
@@ -580,7 +583,7 @@ void main() {
         await _tapSubmit(tester);
 
         expect(authRepository.getDriverProfileCalls, 1);
-        expect(find.text('START_ROUTE'), findsOneWidget);
+        expect(find.text('VEHICLE_ROUTE'), findsOneWidget);
       },
     );
 
@@ -626,6 +629,148 @@ void main() {
       },
     );
   });
+
+  group(
+    'DriverOnboardingAboutYouScreen — modo EDIT (DRIVER-ONBOARDING-R3.7)',
+    () {
+      DriverApplication editProfile() {
+        return const DriverApplication(
+          id: 'profile-1',
+          userId: 'user-1',
+          firstName: 'Rocio',
+          lastName: 'Alegre',
+          status: DriverApplicationStatus.draft,
+          documentType: IdentityDocumentType.dni,
+          documentNumber: '76751234',
+          birthDate: '1990-03-25',
+          email: 'rocio@example.com',
+          photoUrl: 'https://cdn.example.com/rocio.jpg',
+        );
+      }
+
+      testWidgets('precarga los campos y la foto existente', (tester) async {
+        await _pumpScreen(
+          tester,
+          pushedFromReviewArgs: DriverOnboardingAboutYouScreenArgs(
+            profile: editProfile(),
+          ),
+        );
+
+        expect(find.widgetWithText(TextFormField, 'Rocio'), findsOneWidget);
+        expect(find.widgetWithText(TextFormField, 'Alegre'), findsOneWidget);
+        expect(find.widgetWithText(TextFormField, '76751234'), findsOneWidget);
+        expect(
+          find.widgetWithText(TextFormField, 'rocio@example.com'),
+          findsOneWidget,
+        );
+        expect(find.text('25/03/1990'), findsOneWidget);
+        expect(
+          find.byKey(const Key('about-you-existing-photo')),
+          findsOneWidget,
+        );
+        expect(find.text('Guardar cambios'), findsOneWidget);
+      });
+
+      testWidgets('guardar sin elegir una foto nueva no muestra error: la foto '
+          'existente ya satisface el requisito', (tester) async {
+        final profileRepository = _FakeDriverProfileRepository();
+        await _pumpScreen(
+          tester,
+          profileRepository: profileRepository,
+          pushedFromReviewArgs: DriverOnboardingAboutYouScreenArgs(
+            profile: editProfile(),
+          ),
+        );
+
+        await _tapSubmit(tester);
+
+        expect(find.byKey(const Key('about-you-photo-error')), findsNothing);
+        expect(profileRepository.updateCalls, 1);
+        expect(profileRepository.createCalls, 0);
+      });
+
+      testWidgets(
+        'guardar cambios llama updateProfile (PATCH), nunca createProfile',
+        (tester) async {
+          final profileRepository = _FakeDriverProfileRepository();
+          final authRepository = _FakeAuthRepository();
+          await _pumpScreen(
+            tester,
+            profileRepository: profileRepository,
+            authRepository: authRepository,
+            pushedFromReviewArgs: DriverOnboardingAboutYouScreenArgs(
+              profile: editProfile(),
+            ),
+          );
+
+          await tester.enterText(_firstNameField, 'Rocio Actualizada');
+          await _tapSubmit(tester);
+
+          expect(profileRepository.updateCalls, 1);
+          expect(profileRepository.createCalls, 0);
+          expect(profileRepository.lastUpdateFirstName, 'Rocio Actualizada');
+        },
+      );
+
+      testWidgets('elegir una foto nueva sube por Storage antes de terminar', (
+        tester,
+      ) async {
+        final profileRepository = _FakeDriverProfileRepository();
+        final storageRepository = _FakeDriverStorageRepository();
+        final uploader = _FakeDriverPhotoUploader();
+        await _pumpScreen(
+          tester,
+          profileRepository: profileRepository,
+          storageRepository: storageRepository,
+          photoUploader: uploader,
+          pushedFromReviewArgs: DriverOnboardingAboutYouScreenArgs(
+            profile: editProfile(),
+          ),
+        );
+
+        driverOnboardingPhotoPickerOverride = (source) async =>
+            DriverPickedPhoto(
+              bytes: _validPngBytes(),
+              contentType: 'image/jpeg',
+            );
+
+        await tester.ensureVisible(_photoTrigger);
+        await tester.tap(_photoTrigger);
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const Key('photo-picker-gallery-option')));
+        await tester.pumpAndSettle();
+
+        await _tapSubmit(tester);
+
+        expect(profileRepository.updateCalls, 1);
+        expect(storageRepository.presignCalls, 1);
+        expect(uploader.uploadCalls, 1);
+        expect(storageRepository.completeCalls, 1);
+      });
+
+      testWidgets(
+        'la flecha de volver hace pop (no cierra sesión) cuando llegó '
+        'empujada desde Revisar y enviar',
+        (tester) async {
+          final authRepository = _FakeAuthRepository();
+          await _pumpScreen(
+            tester,
+            authRepository: authRepository,
+            pushedFromReviewArgs: DriverOnboardingAboutYouScreenArgs(
+              profile: editProfile(),
+            ),
+          );
+
+          await tester.tap(find.byKey(const Key('about-you-back-button')));
+          await tester.pumpAndSettle();
+
+          expect(authRepository.logoutCalls, 0);
+          expect(find.text('open'), findsOneWidget);
+          expect(find.text('LOGIN_ROUTE'), findsNothing);
+        },
+      );
+    },
+  );
 }
 
 Finder get _firstNameField =>
@@ -702,13 +847,33 @@ Future<void> _pumpScreen(
   _FakeDriverProfileRepository? profileRepository,
   _FakeDriverStorageRepository? storageRepository,
   _FakeDriverPhotoUploader? photoUploader,
+  DriverOnboardingAboutYouScreenArgs? pushedFromReviewArgs,
 }) async {
   final router = GoRouter(
-    initialLocation: '/onboarding/about-you',
+    initialLocation: pushedFromReviewArgs != null
+        ? '/root'
+        : '/onboarding/about-you',
     routes: [
       GoRoute(
+        path: '/root',
+        builder: (context, state) => Scaffold(
+          body: Center(
+            child: TextButton(
+              key: const Key('open-about-you-from-review'),
+              onPressed: () => context.push(
+                DriverOnboardingRoutes.aboutYou,
+                extra: pushedFromReviewArgs,
+              ),
+              child: const Text('open'),
+            ),
+          ),
+        ),
+      ),
+      GoRoute(
         path: '/onboarding/about-you',
-        builder: (context, state) => const DriverOnboardingAboutYouScreen(),
+        builder: (context, state) => DriverOnboardingAboutYouScreen(
+          args: state.extra as DriverOnboardingAboutYouScreenArgs?,
+        ),
       ),
       GoRoute(
         path: '/login',
@@ -717,6 +882,11 @@ Future<void> _pumpScreen(
       GoRoute(
         path: '/onboarding/start',
         builder: (context, state) => const Scaffold(body: Text('START_ROUTE')),
+      ),
+      GoRoute(
+        path: '/onboarding/vehicle',
+        builder: (context, state) =>
+            const Scaffold(body: Text('VEHICLE_ROUTE')),
       ),
     ],
   );
@@ -742,6 +912,11 @@ Future<void> _pumpScreen(
     ),
   );
   await tester.pump();
+
+  if (pushedFromReviewArgs != null) {
+    await tester.tap(find.byKey(const Key('open-about-you-from-review')));
+    await tester.pumpAndSettle();
+  }
 }
 
 /// Mismo montaje que [_pumpScreen], pero con la localización real de
@@ -808,6 +983,24 @@ class _FakeAuthRepository extends AuthRepository {
 
     return getDriverProfileResult;
   }
+
+  /// La pantalla llama esto tras guardar (`_submit()`,
+  /// `DRIVER-ONBOARDING-R3.7`) para decidir a dónde navegar en vez de
+  /// hardcodear una ruta. `draftNoVehicle` es el siguiente paso real
+  /// tras completar "Sobre ti" sin vehículo todavía.
+  @override
+  Future<DriverSessionState> resolveSessionState() async {
+    return const DriverSessionState(
+      kind: DriverSessionKind.draftNoVehicle,
+      user: AuthenticatedUser(
+        id: 'user-1',
+        phoneE164: '+51987654321',
+        roles: ['PASSENGER'],
+        status: 'ACTIVE',
+        isPhoneVerified: true,
+      ),
+    );
+  }
 }
 
 class _FakeDriverProfileRepository extends DriverProfileRepository {
@@ -842,6 +1035,40 @@ class _FakeDriverProfileRepository extends DriverProfileRepository {
     if (completer != null) {
       return completer!.future;
     }
+
+    if (error case final e?) {
+      throw e;
+    }
+
+    return DriverApplication(
+      id: 'profile-1',
+      userId: 'user-1',
+      firstName: firstName,
+      lastName: lastName,
+      status: DriverApplicationStatus.draft,
+      documentType: documentType,
+      documentNumber: documentNumber,
+      birthDate: birthDate,
+      email: email,
+    );
+  }
+
+  int updateCalls = 0;
+  String? lastUpdateFirstName;
+  String? lastUpdateEmail;
+
+  @override
+  Future<DriverApplication> updateProfile({
+    required String firstName,
+    required String lastName,
+    required IdentityDocumentType documentType,
+    required String documentNumber,
+    required String birthDate,
+    String? email,
+  }) async {
+    updateCalls += 1;
+    lastUpdateFirstName = firstName;
+    lastUpdateEmail = email;
 
     if (error case final e?) {
       throw e;

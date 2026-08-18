@@ -13,19 +13,40 @@ import 'driver_onboarding_progress.dart';
 
 final _maximumVehicleYear = DateTime.now().year + 1;
 
+/// Datos para abrir "Tu mototaxi" en modo edición desde "Revisar y
+/// enviar" (`DRIVER-ONBOARDING-R3.7`). Su sola presencia (`args !=
+/// null`) es la única señal que la pantalla necesita para decidir
+/// CREATE vs EDIT — sin booleanos adicionales.
+class DriverOnboardingVehicleScreenArgs {
+  const DriverOnboardingVehicleScreenArgs({required this.vehicle});
+
+  final DriverVehicle vehicle;
+}
+
 /// Paso 3 del onboarding de Driver: "Tu mototaxi".
 ///
-/// Solo llega aquí `DriverSessionKind.draftNoVehicle` (ver
-/// `driver_onboarding_routes.dart`): un `DriverVehicle` ya existente
-/// significa que este paso ya se completó (relación 1:1 con
-/// `DriverProfile`, verificado en `DRIVER-ONBOARDING-R3.5A`).
+/// **Modo CREATE** (`args == null`): solo llega aquí
+/// `DriverSessionKind.draftNoVehicle` (ver `driver_onboarding_routes.
+/// dart`) — un `DriverVehicle` ya existente significa que este paso
+/// ya se completó (relación 1:1 con `DriverProfile`, verificado en
+/// `DRIVER-ONBOARDING-R3.5A`).
 ///
 /// Nunca envía `vehicleType` (Backend lo fija a `MOTOTAXI`) ni
 /// `engineNumber`/`chassisNumber` (el onboarding nuevo no los pide,
 /// decisión ya cerrada) ni `driverProfileId` (Backend lo resuelve
 /// por sesión).
+///
+/// **Modo EDIT** (`args != null`, `DRIVER-ONBOARDING-R3.7`): se abre
+/// vía `context.push` desde "Editar" en "Revisar y enviar", con el
+/// vehículo precargado. Usa `PATCH drivers/me/vehicle`
+/// (`updateVehicle`) en vez de `POST`. Mismo criterio de
+/// `Navigator.canPop()` que "Sobre ti" para distinguir el botón de
+/// volver: nunca cierra sesión si llegó empujada desde Revisar y
+/// enviar.
 class DriverOnboardingVehicleScreen extends ConsumerStatefulWidget {
-  const DriverOnboardingVehicleScreen({super.key});
+  const DriverOnboardingVehicleScreen({super.key, this.args});
+
+  final DriverOnboardingVehicleScreenArgs? args;
 
   @override
   ConsumerState<DriverOnboardingVehicleScreen> createState() =>
@@ -47,6 +68,26 @@ class _DriverOnboardingVehicleScreenState
   String? _plateError;
 
   bool _submitting = false;
+
+  bool get _isEditMode => widget.args != null;
+
+  @override
+  void initState() {
+    super.initState();
+
+    final vehicle = widget.args?.vehicle;
+
+    if (vehicle != null) {
+      _plateController.text = vehicle.plate;
+      _brandController.text = vehicle.brand;
+      _modelController.text = vehicle.model;
+      _yearController.text = vehicle.year.toString();
+      _colorController.text = vehicle.color;
+      _ownership = vehicle.ownership == VehicleOwnership.unknown
+          ? null
+          : vehicle.ownership;
+    }
+  }
 
   @override
   void dispose() {
@@ -87,28 +128,45 @@ class _DriverOnboardingVehicleScreenState
     final vehicleRepository = ref.read(driverVehicleRepositoryProvider);
 
     try {
-      await vehicleRepository.createVehicle(
-        plate: _plateController.text.trim().toUpperCase(),
-        brand: _brandController.text.trim(),
-        model: _modelController.text.trim(),
-        year: int.parse(_yearController.text.trim()),
-        color: _colorController.text.trim(),
-        ownership: ownership,
-      );
+      if (_isEditMode) {
+        await vehicleRepository.updateVehicle(
+          plate: _plateController.text.trim().toUpperCase(),
+          brand: _brandController.text.trim(),
+          model: _modelController.text.trim(),
+          year: int.parse(_yearController.text.trim()),
+          color: _colorController.text.trim(),
+          ownership: ownership,
+        );
+      } else {
+        await vehicleRepository.createVehicle(
+          plate: _plateController.text.trim().toUpperCase(),
+          brand: _brandController.text.trim(),
+          model: _modelController.text.trim(),
+          year: int.parse(_yearController.text.trim()),
+          color: _colorController.text.trim(),
+          ownership: ownership,
+        );
+      }
 
       if (!mounted) {
         return;
       }
 
-      context.go(DriverOnboardingRoutes.start);
+      final freshState = await authRepository.resolveSessionState();
+
+      if (!mounted) {
+        return;
+      }
+
+      goToDriverSessionRoute(context, freshState);
     } on DioException catch (error) {
       if (!mounted) {
         return;
       }
 
-      await _handleCreateError(authRepository, error);
+      await _handleSubmitError(authRepository, error);
     } catch (error) {
-      debugPrint('Error inesperado creando vehículo Driver: $error');
+      debugPrint('Error inesperado guardando vehículo Driver: $error');
 
       if (!mounted) {
         return;
@@ -128,11 +186,11 @@ class _DriverOnboardingVehicleScreenState
 
   /// Un 409 puede significar dos cosas muy distintas en Backend
   /// (`getUniqueConstraintException` en `driver-vehicles.service.ts`):
-  /// placa duplicada (error del campo Placa) o el conductor ya tiene
-  /// un vehículo registrado (se resuelve consultando el estado real
-  /// antes de tratarlo como error fatal — nunca se oculta una
-  /// inconsistencia en silencio).
-  Future<void> _handleCreateError(
+  /// placa duplicada (error del campo Placa) o — solo en modo CREATE —
+  /// el conductor ya tiene un vehículo registrado (se resuelve
+  /// consultando el estado real antes de tratarlo como error fatal —
+  /// nunca se oculta una inconsistencia en silencio).
+  Future<void> _handleSubmitError(
     AuthRepository authRepository,
     DioException error,
   ) async {
@@ -149,7 +207,7 @@ class _DriverOnboardingVehicleScreenState
       return;
     }
 
-    if (statusCode == 409) {
+    if (statusCode == 409 && !_isEditMode) {
       DriverVehicle? existingVehicle;
 
       try {
@@ -163,7 +221,13 @@ class _DriverOnboardingVehicleScreenState
           return;
         }
 
-        context.go(DriverOnboardingRoutes.start);
+        final freshState = await authRepository.resolveSessionState();
+
+        if (!mounted) {
+          return;
+        }
+
+        goToDriverSessionRoute(context, freshState);
         return;
       }
     }
@@ -177,6 +241,23 @@ class _DriverOnboardingVehicleScreenState
     ScaffoldMessenger.of(
       context,
     ).showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  /// Modo EDIT (llegó empujada desde "Revisar y enviar", con pila de
+  /// navegación real): solo vuelve atrás, nunca cierra sesión. Modo
+  /// CREATE (llegó vía el routing normal con `context.go`, sin pila):
+  /// mismo comportamiento de siempre.
+  Future<void> _handleBack() async {
+    if (_submitting) {
+      return;
+    }
+
+    if (Navigator.of(context).canPop()) {
+      context.pop();
+      return;
+    }
+
+    await _exitToLogin();
   }
 
   Future<void> _exitToLogin() async {
@@ -212,7 +293,7 @@ class _DriverOnboardingVehicleScreenState
             Icons.arrow_back_rounded,
             color: DriverPalette.greenPrimary,
           ),
-          onPressed: _submitting ? null : _exitToLogin,
+          onPressed: _submitting ? null : _handleBack,
         ),
       ),
       body: SafeArea(
@@ -401,10 +482,10 @@ class _DriverOnboardingVehicleScreenState
                                 ),
                               ],
                             )
-                          : const Text(
-                              'Continuar',
-                              key: ValueKey('vehicle-ready'),
-                              style: TextStyle(
+                          : Text(
+                              _isEditMode ? 'Guardar cambios' : 'Continuar',
+                              key: const ValueKey('vehicle-ready'),
+                              style: const TextStyle(
                                 fontSize: 16,
                                 fontWeight: FontWeight.w700,
                               ),

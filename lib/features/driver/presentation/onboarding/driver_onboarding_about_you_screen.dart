@@ -169,6 +169,32 @@ String formatDriverOnboardingIsoDate(DateTime date) {
   return '$year-$month-$day';
 }
 
+/// Inverso de [formatDriverOnboardingIsoDate]: parsea el `birthDate`
+/// (`YYYY-MM-DD`) que devuelve Backend para precargar el selector en
+/// modo EDIT. `null` si viene ausente o malformado (defensivo, nunca
+/// debería ocurrir con un `DriverApplication` real).
+DateTime? _tryParseIsoBirthDate(String? value) {
+  if (value == null || value.isEmpty) {
+    return null;
+  }
+
+  final parts = value.split('-');
+
+  if (parts.length != 3) {
+    return null;
+  }
+
+  final year = int.tryParse(parts[0]);
+  final month = int.tryParse(parts[1]);
+  final day = int.tryParse(parts[2]);
+
+  if (year == null || month == null || day == null) {
+    return null;
+  }
+
+  return DateTime(year, month, day);
+}
+
 String _formatDisplayDate(DateTime date) {
   final day = date.day.toString().padLeft(2, '0');
   final month = date.month.toString().padLeft(2, '0');
@@ -177,21 +203,33 @@ String _formatDisplayDate(DateTime date) {
   return '$day/$month/$year';
 }
 
-/// Excepción interna: la creación del `DriverProfile` falló (o un
-/// 409 no pudo confirmarse como ya-resuelto vía `GET drivers/me`).
-/// Nunca se expone fuera de esta pantalla.
-class _DriverProfileCreationFailedException implements Exception {
-  const _DriverProfileCreationFailedException(this.message);
+/// Excepción interna: guardar el `DriverProfile` (create o update)
+/// falló, o un 409 en modo CREATE no pudo confirmarse como
+/// ya-resuelto vía `GET drivers/me`. Nunca se expone fuera de esta
+/// pantalla.
+class _DriverProfileSaveFailedException implements Exception {
+  const _DriverProfileSaveFailedException(this.message);
 
   final String message;
 }
 
+/// Datos para abrir "Sobre ti" en modo edición desde "Revisar y
+/// enviar" (`DRIVER-ONBOARDING-R3.7`). Su sola presencia (`args !=
+/// null`) es la única señal que la pantalla necesita para decidir
+/// CREATE vs EDIT — sin booleanos adicionales.
+class DriverOnboardingAboutYouScreenArgs {
+  const DriverOnboardingAboutYouScreenArgs({required this.profile});
+
+  final DriverApplication profile;
+}
+
 /// Paso 2 del onboarding de Driver: "Sobre ti".
 ///
-/// Solo llega aquí `DriverSessionKind.noProfile` (ver
-/// `driver_onboarding_routes.dart`): un `DriverProfile` ya existente
-/// significa que este paso ya se completó, porque sus campos de
-/// texto son obligatorios para crearlo.
+/// **Modo CREATE** (`args == null`): solo llega aquí
+/// `DriverSessionKind.noProfile` (ver `driver_onboarding_routes.dart`)
+/// — un `DriverProfile` ya existente significa que este paso ya se
+/// completó, porque sus campos de texto son obligatorios para
+/// crearlo.
 ///
 /// Orden transaccional exigido por el contrato real de Backend
 /// (`DRIVER-ONBOARDING-R3.4A`): `POST drivers/me` (crea el DRAFT)
@@ -199,8 +237,19 @@ class _DriverProfileCreationFailedException implements Exception {
 /// `DriverProfile` ya exista para poder construir el `objectKey`
 /// (`drivers/<driverProfileId>/profile/...`). Si la foto falla
 /// después de crear el DRAFT, un reintento nunca repite el `POST`.
+///
+/// **Modo EDIT** (`args != null`, `DRIVER-ONBOARDING-R3.7`): se abre
+/// vía `context.push` desde "Editar" en "Revisar y enviar", con la
+/// solicitud precargada. Usa `PATCH drivers/me` en vez de `POST`; la
+/// foto existente ya satisface el requisito (no obliga a elegir una
+/// nueva). Al guardar con éxito, o al tocar la flecha de volver,
+/// nunca cierra sesión — usa `Navigator.canPop()` para distinguir si
+/// llegó empujada desde Revisar y enviar (con pila) o desde el
+/// routing normal de onboarding (sin pila, `context.go`).
 class DriverOnboardingAboutYouScreen extends ConsumerStatefulWidget {
-  const DriverOnboardingAboutYouScreen({super.key});
+  const DriverOnboardingAboutYouScreen({super.key, this.args});
+
+  final DriverOnboardingAboutYouScreenArgs? args;
 
   @override
   ConsumerState<DriverOnboardingAboutYouScreen> createState() =>
@@ -225,10 +274,33 @@ class _DriverOnboardingAboutYouScreenState
   String? _photoError;
   String? _birthDateError;
 
-  /// El perfil ya se creó en esta sesión (POST exitoso, o confirmado
-  /// vía `GET drivers/me` tras un 409). Evita repetir el `POST` en
-  /// un reintento de la foto.
-  bool _profileCreated = false;
+  bool get _isEditMode => widget.args != null;
+
+  /// Foto ya persistida (modo EDIT): satisface el requisito sin
+  /// obligar a elegir una nueva. `null` en modo CREATE.
+  String? _existingPhotoUrl;
+
+  /// El perfil ya se guardó en esta sesión (POST/PATCH exitoso, o
+  /// confirmado vía `GET drivers/me` tras un 409 en modo CREATE).
+  /// Evita repetir la escritura en un reintento de la foto.
+  bool _profileSaved = false;
+
+  @override
+  void initState() {
+    super.initState();
+
+    final profile = widget.args?.profile;
+
+    if (profile != null) {
+      _firstNameController.text = profile.firstName;
+      _lastNameController.text = profile.lastName;
+      _documentType = profile.documentType;
+      _documentNumberController.text = profile.documentNumber ?? '';
+      _emailController.text = profile.email ?? '';
+      _birthDate = _tryParseIsoBirthDate(profile.birthDate);
+      _existingPhotoUrl = profile.photoUrl;
+    }
+  }
 
   @override
   void dispose() {
@@ -349,14 +421,18 @@ class _DriverOnboardingAboutYouScreenState
     final birthDateValid =
         birthDate != null && isDriverOnboardingBirthDateAdult(birthDate);
 
+    final photoSatisfied =
+        photo != null ||
+        (_isEditMode && (_existingPhotoUrl?.isNotEmpty ?? false));
+
     setState(() {
       _birthDateError = birthDate == null
           ? 'Selecciona tu fecha de nacimiento.'
           : (birthDateValid ? null : 'Debes tener al menos 18 años.');
-      _photoError = photo == null ? 'Agrega una foto para continuar.' : null;
+      _photoError = photoSatisfied ? null : 'Agrega una foto para continuar.';
     });
 
-    if (!formValid || !birthDateValid || photo == null) {
+    if (!formValid || !birthDateValid || !photoSatisfied) {
       return;
     }
 
@@ -372,33 +448,45 @@ class _DriverOnboardingAboutYouScreenState
     final uploader = ref.read(driverPhotoUploaderProvider);
 
     try {
-      if (!_profileCreated) {
-        await _createProfile(authRepository, profileRepository, birthDate);
+      if (!_profileSaved) {
+        if (_isEditMode) {
+          await _updateProfile(profileRepository, birthDate);
+        } else {
+          await _createProfile(authRepository, profileRepository, birthDate);
+        }
       }
 
-      final presigned = await storageRepository.presignUpload(
-        category: driverProfilePhotoStorageCategory,
-        contentType: photo.contentType,
-        fileSize: photo.bytes.length,
-      );
+      if (photo != null) {
+        final presigned = await storageRepository.presignUpload(
+          category: driverProfilePhotoStorageCategory,
+          contentType: photo.contentType,
+          fileSize: photo.bytes.length,
+        );
 
-      await uploader.upload(
-        uploadUrl: presigned.uploadUrl,
-        contentType: presigned.contentType,
-        bytes: photo.bytes,
-      );
+        await uploader.upload(
+          uploadUrl: presigned.uploadUrl,
+          contentType: presigned.contentType,
+          bytes: photo.bytes,
+        );
 
-      await storageRepository.completeUpload(
-        category: driverProfilePhotoStorageCategory,
-        objectKey: presigned.objectKey,
-      );
+        await storageRepository.completeUpload(
+          category: driverProfilePhotoStorageCategory,
+          objectKey: presigned.objectKey,
+        );
+      }
 
       if (!mounted) {
         return;
       }
 
-      context.go(DriverOnboardingRoutes.start);
-    } on _DriverProfileCreationFailedException catch (error) {
+      final freshState = await authRepository.resolveSessionState();
+
+      if (!mounted) {
+        return;
+      }
+
+      goToDriverSessionRoute(context, freshState);
+    } on _DriverProfileSaveFailedException catch (error) {
       if (!mounted) {
         return;
       }
@@ -409,7 +497,11 @@ class _DriverOnboardingAboutYouScreenState
         return;
       }
 
-      _showError('No pudimos subir tu foto. Inténtalo nuevamente.');
+      _showError(
+        _isEditMode
+            ? 'No pudimos actualizar tu foto. Inténtalo nuevamente.'
+            : 'No pudimos subir tu foto. Inténtalo nuevamente.',
+      );
     } catch (error) {
       debugPrint('Error inesperado completando Sobre ti: $error');
 
@@ -446,14 +538,14 @@ class _DriverOnboardingAboutYouScreenState
             : _emailController.text.trim().toLowerCase(),
       );
 
-      _profileCreated = true;
+      _profileSaved = true;
     } on DioException catch (error) {
       if (error.response?.statusCode == 409) {
         try {
           final existing = await authRepository.getDriverProfile();
 
           if (existing != null) {
-            _profileCreated = true;
+            _profileSaved = true;
             return;
           }
         } on DioException {
@@ -461,7 +553,34 @@ class _DriverOnboardingAboutYouScreenState
         }
       }
 
-      throw const _DriverProfileCreationFailedException(
+      throw const _DriverProfileSaveFailedException(
+        'No pudimos guardar tus datos. Inténtalo nuevamente.',
+      );
+    }
+  }
+
+  /// `PATCH drivers/me` (modo EDIT, `DRIVER-ONBOARDING-R3.7`). A
+  /// diferencia de `_createProfile`, un error nunca puede resolverse
+  /// vía `GET` — un `PATCH` no crea nada que un 409 pudiera confirmar.
+  Future<void> _updateProfile(
+    DriverProfileRepository profileRepository,
+    DateTime birthDate,
+  ) async {
+    try {
+      await profileRepository.updateProfile(
+        firstName: _firstNameController.text.trim(),
+        lastName: _lastNameController.text.trim(),
+        documentType: _documentType,
+        documentNumber: _documentNumberController.text.trim().toUpperCase(),
+        birthDate: formatDriverOnboardingIsoDate(birthDate),
+        email: _emailController.text.trim().isEmpty
+            ? null
+            : _emailController.text.trim().toLowerCase(),
+      );
+
+      _profileSaved = true;
+    } on DioException {
+      throw const _DriverProfileSaveFailedException(
         'No pudimos guardar tus datos. Inténtalo nuevamente.',
       );
     }
@@ -473,11 +592,24 @@ class _DriverOnboardingAboutYouScreenState
     ).showSnackBar(SnackBar(content: Text(message)));
   }
 
-  Future<void> _exitToLogin() async {
+  /// Modo EDIT (llegó empujada desde "Revisar y enviar", con pila de
+  /// navegación real): solo vuelve atrás, nunca cierra sesión. Modo
+  /// CREATE (llegó vía el routing normal con `context.go`, sin pila):
+  /// mismo comportamiento de siempre.
+  Future<void> _handleBack() async {
     if (_submitting) {
       return;
     }
 
+    if (Navigator.of(context).canPop()) {
+      context.pop();
+      return;
+    }
+
+    await _exitToLogin();
+  }
+
+  Future<void> _exitToLogin() async {
     final repository = ref.read(authRepositoryProvider);
 
     try {
@@ -506,7 +638,7 @@ class _DriverOnboardingAboutYouScreenState
             Icons.arrow_back_rounded,
             color: DriverPalette.greenPrimary,
           ),
-          onPressed: _submitting ? null : _exitToLogin,
+          onPressed: _submitting ? null : _handleBack,
         ),
       ),
       body: SafeArea(
@@ -544,6 +676,7 @@ class _DriverOnboardingAboutYouScreenState
                 Center(
                   child: _PhotoPicker(
                     photo: _photo,
+                    existingPhotoUrl: _existingPhotoUrl,
                     enabled: !_submitting && !_pickingPhoto,
                     onTap: _openPhotoPicker,
                   ),
@@ -705,10 +838,10 @@ class _DriverOnboardingAboutYouScreenState
                                 ),
                               ],
                             )
-                          : const Text(
-                              'Continuar',
-                              key: ValueKey('about-you-ready'),
-                              style: TextStyle(
+                          : Text(
+                              _isEditMode ? 'Guardar cambios' : 'Continuar',
+                              key: const ValueKey('about-you-ready'),
+                              style: const TextStyle(
                                 fontSize: 16,
                                 fontWeight: FontWeight.w700,
                               ),
@@ -814,11 +947,21 @@ class _PhotoPicker extends StatelessWidget {
     required this.photo,
     required this.enabled,
     required this.onTap,
+    this.existingPhotoUrl,
   });
 
   final DriverPickedPhoto? photo;
   final bool enabled;
   final VoidCallback onTap;
+
+  /// Foto ya persistida (modo EDIT), mostrada mientras el usuario no
+  /// elija una nueva. Si la carga remota falla, cae a un ícono
+  /// genérico — nunca bloquea la pantalla por eso (la foto ya
+  /// satisface el requisito en Backend, con o sin miniatura visible).
+  final String? existingPhotoUrl;
+
+  bool get _hasAnyPhoto =>
+      photo != null || (existingPhotoUrl?.isNotEmpty ?? false);
 
   @override
   Widget build(BuildContext context) {
@@ -842,17 +985,34 @@ class _PhotoPicker extends StatelessWidget {
                     )
                   : null,
             ),
-            child: photo == null
-                ? const Icon(
+            child: photo != null
+                ? null
+                : (existingPhotoUrl?.isNotEmpty ?? false)
+                ? ClipOval(
+                    child: Image.network(
+                      existingPhotoUrl!,
+                      key: const Key('about-you-existing-photo'),
+                      width: 96,
+                      height: 96,
+                      fit: BoxFit.cover,
+                      errorBuilder: (context, error, stackTrace) {
+                        return const Icon(
+                          Icons.check_circle_outline_rounded,
+                          color: DriverPalette.greenPrimary,
+                          size: 30,
+                        );
+                      },
+                    ),
+                  )
+                : const Icon(
                     Icons.add_a_photo_outlined,
                     color: DriverPalette.greenPrimary,
                     size: 30,
-                  )
-                : null,
+                  ),
           ),
           const SizedBox(height: 10),
           Text(
-            photo == null ? 'Agregar foto' : 'Cambiar foto',
+            _hasAnyPhoto ? 'Cambiar foto' : 'Agregar foto',
             style: const TextStyle(
               color: DriverPalette.greenPrimary,
               fontSize: 14,
