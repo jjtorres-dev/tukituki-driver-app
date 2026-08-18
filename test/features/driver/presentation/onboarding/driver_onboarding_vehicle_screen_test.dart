@@ -587,10 +587,6 @@ Future<void> _pumpScreen(
         builder: (context, state) => const Scaffold(body: Text('LOGIN_ROUTE')),
       ),
       GoRoute(
-        path: '/onboarding/start',
-        builder: (context, state) => const Scaffold(body: Text('START_ROUTE')),
-      ),
-      GoRoute(
         path: '/onboarding/documents',
         builder: (context, state) =>
             const Scaffold(body: Text('DOCUMENTS_ROUTE')),

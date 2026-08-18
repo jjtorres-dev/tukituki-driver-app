@@ -285,11 +285,6 @@ Future<void> _pumpScreen(
         builder: (context, state) =>
             const Scaffold(body: Text('ABOUT_YOU_ROUTE')),
       ),
-      GoRoute(
-        path: '/onboarding/start',
-        builder: (context, state) =>
-            const Scaffold(body: Text('ONBOARDING_START_ROUTE')),
-      ),
     ],
   );
   addTearDown(router.dispose);

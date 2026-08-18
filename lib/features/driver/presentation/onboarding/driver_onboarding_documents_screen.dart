@@ -337,11 +337,17 @@ enum _DocumentPickSource { camera, gallery, pdf }
 
 /// Paso 4 del onboarding de Driver: "Tus documentos".
 ///
-/// Solo llega aquí `DriverSessionKind.draftDocumentsIncomplete` (ver
-/// `driver_onboarding_routes.dart`): los 3 documentos requeridos ya
+/// Llega aquí directo desde el routing normal solo
+/// `DriverSessionKind.draftDocumentsIncomplete` (ver
+/// `driver_onboarding_routes.dart`) — los 3 documentos requeridos ya
 /// completos (archivo + metadata) significa que este paso ya terminó,
-/// así que ese caso va directo a [DriverOnboardingRoutes.start]
-/// (foundation de Paso 5).
+/// así que al completarlos "Continuar" resuelve la sesión de nuevo y
+/// navega adonde corresponda (`DriverOnboardingRoutes.review` en un
+/// envío inicial). También se reutiliza empujada (`context.push`, con
+/// `args`) desde "Revisar y enviar" (edición libre) y desde
+/// "Correcciones requeridas" (`DRIVER-ONBOARDING-R3.8`, enfocada y
+/// restringida al documento observado vía
+/// `DriverOnboardingDocumentsScreenArgs`).
 ///
 /// Decisiones de producto ya cerradas (`DRIVER-ONBOARDING-R3.6`):
 /// selector cámara/galería/PDF por documento, metadata capturada
