@@ -3,8 +3,11 @@ import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:flutter_secure_storage/test/test_flutter_secure_storage_platform.dart';
+import 'package:flutter_secure_storage_platform_interface/flutter_secure_storage_platform_interface.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:driver/core/storage/secure_storage.dart';
 import 'package:driver/features/auth/data/auth_repository.dart';
 import 'package:driver/features/auth/domain/driver_session_state.dart';
 import 'package:driver/features/driver/domain/driver_application.dart';
@@ -58,11 +61,12 @@ AuthRepository _repositoryWith(Map<String, (int, Object?)> responses) {
 }
 
 Map<String, dynamic> _meJson({
+  String id = 'user-1',
   List<String> roles = const ['PASSENGER'],
   bool isPhoneVerified = true,
 }) {
   return {
-    'id': 'user-1',
+    'id': id,
     'phoneE164': '+51987654321',
     'roles': roles,
     'status': 'ACTIVE',
@@ -153,6 +157,15 @@ Map<String, dynamic> _driverVehicleJson({String status = 'DRAFT'}) {
 }
 
 void main() {
+  late Map<String, String> secureStorageData;
+
+  setUp(() {
+    secureStorageData = {};
+    FlutterSecureStoragePlatform.instance = TestFlutterSecureStoragePlatform(
+      secureStorageData,
+    );
+  });
+
   group('AuthRepository.registerPassenger', () {
     test('envía phoneE164 y password a auth/register/passenger', () async {
       final repository = _repositoryWith({
@@ -459,8 +472,9 @@ void main() {
       expect(state.documents, hasLength(3));
     });
 
-    test('REJECTED → rejected, conserva rejectionReason', () async {
-      final repository = _repositoryWith({
+    test('REJECTED → correctionsRequired, carga vehicle/documents y '
+        'marca contexto de reenvío (DRIVER-ONBOARDING-R3.8)', () async {
+      final adapter = _ScriptedAdapter({
         'auth/me': (200, _meJson()),
         'drivers/me': (
           200,
@@ -469,13 +483,68 @@ void main() {
             rejectionReason: 'Foto ilegible',
           ),
         ),
+        'drivers/me/vehicle': (200, _driverVehicleJson()),
+        'drivers/me/documents': (200, _allCompleteDocumentsJson()),
+      });
+      final dio = Dio()..httpClientAdapter = adapter;
+      final repository = AuthRepository(dio, const FlutterSecureStorage());
+
+      final state = await repository.resolveSessionState();
+
+      expect(state.kind, DriverSessionKind.correctionsRequired);
+      expect(state.application?.rejectionReason, 'Foto ilegible');
+      expect(state.vehicle?.plate, '1234-AB');
+      expect(state.documents, hasLength(3));
+      expect(
+        adapter.requestedPaths,
+        containsAll([
+          'auth/me',
+          'drivers/me',
+          'drivers/me/vehicle',
+          'drivers/me/documents',
+        ]),
+      );
+      expect(
+        secureStorageData[StorageKeys.driverResubmissionContext('user-1')],
+        'true',
+      );
+    });
+
+    test('DRAFT ya corregido (sin observaciones) pero con contexto de '
+        'reenvío local activo → sigue correctionsRequired hasta el '
+        'reenvío exitoso (DRIVER-ONBOARDING-R3.8, Backend no conserva '
+        'historial de rechazos)', () async {
+      secureStorageData[StorageKeys.driverResubmissionContext('user-1')] =
+          'true';
+
+      final repository = _repositoryWith({
+        'auth/me': (200, _meJson()),
+        'drivers/me': (200, _driverProfileJson(status: 'DRAFT')),
+        'drivers/me/vehicle': (200, _driverVehicleJson()),
+        'drivers/me/documents': (200, _allCompleteDocumentsJson()),
       });
 
       final state = await repository.resolveSessionState();
 
-      expect(state.kind, DriverSessionKind.rejected);
-      expect(state.application?.rejectionReason, 'Foto ilegible');
+      expect(state.kind, DriverSessionKind.correctionsRequired);
     });
+
+    test(
+      'DRAFT sin observaciones y sin contexto de reenvío local → '
+      'draftDocumentsComplete (flujo normal, nunca tocado por R3.8)',
+      () async {
+        final repository = _repositoryWith({
+          'auth/me': (200, _meJson()),
+          'drivers/me': (200, _driverProfileJson(status: 'DRAFT')),
+          'drivers/me/vehicle': (200, _driverVehicleJson()),
+          'drivers/me/documents': (200, _allCompleteDocumentsJson()),
+        });
+
+        final state = await repository.resolveSessionState();
+
+        expect(state.kind, DriverSessionKind.draftDocumentsComplete);
+      },
+    );
 
     test(
       'PENDING_REVIEW → pendingReview, NO consulta drivers/me/vehicle',
@@ -549,6 +618,199 @@ void main() {
       final state = await repository.resolveSessionState();
 
       expect(state.kind, DriverSessionKind.unknownApplicationStatus);
+    });
+  });
+
+  group('AuthRepository resubmission context — scoped por cuenta '
+      '(DRIVER-ONBOARDING-R3.8B)', () {
+    test('markResubmissionContext()/hasResubmissionContext() requieren '
+        'userId y usan una key scoped por cuenta', () async {
+      final repository = _repositoryWith({});
+
+      expect(
+        await repository.hasResubmissionContext(userId: 'user-1'),
+        isFalse,
+      );
+
+      await repository.markResubmissionContext(userId: 'user-1');
+
+      expect(await repository.hasResubmissionContext(userId: 'user-1'), isTrue);
+      expect(
+        secureStorageData[StorageKeys.driverResubmissionContext('user-1')],
+        'true',
+      );
+    });
+
+    test(
+      'clearResubmissionContext() borra el marcador de esa cuenta',
+      () async {
+        final repository = _repositoryWith({});
+
+        await repository.markResubmissionContext(userId: 'user-1');
+        expect(
+          await repository.hasResubmissionContext(userId: 'user-1'),
+          isTrue,
+        );
+
+        await repository.clearResubmissionContext(userId: 'user-1');
+
+        expect(
+          await repository.hasResubmissionContext(userId: 'user-1'),
+          isFalse,
+        );
+        expect(
+          secureStorageData.containsKey(
+            StorageKeys.driverResubmissionContext('user-1'),
+          ),
+          isFalse,
+        );
+      },
+    );
+
+    test('C. un marcador de la cuenta A NUNCA es visible para la cuenta B '
+        '— nunca es un booleano global', () async {
+      final repository = _repositoryWith({});
+
+      await repository.markResubmissionContext(userId: 'user-A');
+
+      expect(await repository.hasResubmissionContext(userId: 'user-A'), isTrue);
+      expect(
+        await repository.hasResubmissionContext(userId: 'user-B'),
+        isFalse,
+      );
+    });
+
+    test('B. clearSession() (logout) NUNCA borra el marcador — cerrar '
+        'sesión termina la sesión, no el ciclo administrativo de la '
+        'solicitud (hallazgo físico pre-review, R3.8B)', () async {
+      final repository = _repositoryWith({});
+
+      await repository.markResubmissionContext(userId: 'user-1');
+      expect(await repository.hasResubmissionContext(userId: 'user-1'), isTrue);
+
+      await repository.clearSession();
+
+      expect(await repository.hasResubmissionContext(userId: 'user-1'), isTrue);
+    });
+
+    test('B/D. logout + login de la MISMA cuenta con el perfil ya '
+        'corregido a DRAFT preserva el contexto de reenvío vía '
+        'resolveSessionState()', () async {
+      final repository = _repositoryWith({
+        'auth/me': (200, _meJson(id: 'user-1')),
+        'drivers/me': (200, _driverProfileJson(status: 'DRAFT')),
+        'drivers/me/vehicle': (200, _driverVehicleJson()),
+        'drivers/me/documents': (200, _allCompleteDocumentsJson()),
+      });
+
+      await repository.markResubmissionContext(userId: 'user-1');
+      await repository.clearSession();
+
+      final state = await repository.resolveSessionState();
+
+      expect(state.kind, DriverSessionKind.correctionsRequired);
+    });
+
+    test(
+      'E. todo corregido pero aún sin reenviar, logout + login misma '
+      'cuenta → sigue en modo reenvío, nunca "Enviar solicitud" inicial',
+      () async {
+        final repository = _repositoryWith({
+          'auth/me': (200, _meJson(id: 'user-1')),
+          'drivers/me': (200, _driverProfileJson(status: 'DRAFT')),
+          'drivers/me/vehicle': (200, _driverVehicleJson(status: 'DRAFT')),
+          'drivers/me/documents': (200, _allCompleteDocumentsJson()),
+        });
+
+        // Simula: REJECTED detectado en un login anterior (marca el
+        // contexto), el conductor corrige todo (perfil/vehicle/
+        // documentos ya vuelven a DRAFT/sin observaciones) y cierra
+        // sesión ANTES de reenviar.
+        await repository.markResubmissionContext(userId: 'user-1');
+        await repository.clearSession();
+
+        final state = await repository.resolveSessionState();
+
+        expect(state.kind, DriverSessionKind.correctionsRequired);
+      },
+    );
+
+    test('I. cuenta B, DRAFT normal que nunca fue rechazada, jamás hereda '
+        'el marcador de la cuenta A', () async {
+      final repository = _repositoryWith({
+        'auth/me': (200, _meJson(id: 'user-B')),
+        'drivers/me': (200, _driverProfileJson(status: 'DRAFT')),
+        'drivers/me/vehicle': (200, _driverVehicleJson()),
+        'drivers/me/documents': (200, _allCompleteDocumentsJson()),
+      });
+
+      await repository.markResubmissionContext(userId: 'user-A');
+
+      final state = await repository.resolveSessionState();
+
+      expect(state.kind, DriverSessionKind.draftDocumentsComplete);
+    });
+
+    test('F. PENDING_REVIEW limpia el marcador de forma defensiva (refuerza '
+        'la limpieza explícita del submit, por si nunca se ejecutó)', () async {
+      final repository = _repositoryWith({
+        'auth/me': (200, _meJson(id: 'user-1')),
+        'drivers/me': (200, _driverProfileJson(status: 'PENDING_REVIEW')),
+      });
+
+      await repository.markResubmissionContext(userId: 'user-1');
+
+      await repository.resolveSessionState();
+
+      expect(
+        await repository.hasResubmissionContext(userId: 'user-1'),
+        isFalse,
+      );
+    });
+
+    test('14. APPROVED limpia cualquier marcador residual de esa cuenta '
+        '(estado terminal, ya no hay ciclo de corrección posible)', () async {
+      final repository = _repositoryWith({
+        'auth/me': (200, _meJson(id: 'user-1', roles: ['PASSENGER', 'DRIVER'])),
+        'drivers/me': (200, _driverProfileJson(status: 'APPROVED')),
+      });
+
+      await repository.markResubmissionContext(userId: 'user-1');
+
+      await repository.resolveSessionState();
+
+      expect(
+        await repository.hasResubmissionContext(userId: 'user-1'),
+        isFalse,
+      );
+    });
+
+    test('14. SUSPENDED limpia cualquier marcador residual de esa cuenta '
+        '(estado terminal)', () async {
+      final repository = _repositoryWith({
+        'auth/me': (200, _meJson(id: 'user-1')),
+        'drivers/me': (200, _driverProfileJson(status: 'SUSPENDED')),
+      });
+
+      await repository.markResubmissionContext(userId: 'user-1');
+
+      await repository.resolveSessionState();
+
+      expect(
+        await repository.hasResubmissionContext(userId: 'user-1'),
+        isFalse,
+      );
+    });
+
+    test('A. el marcador sobrevive sin ninguna interacción adicional — '
+        'no depende de estado en memoria (simula reinicio de la app: una '
+        'nueva instancia de AuthRepository sobre el mismo storage)', () async {
+      final first = _repositoryWith({});
+      await first.markResubmissionContext(userId: 'user-1');
+
+      final second = _repositoryWith({});
+
+      expect(await second.hasResubmissionContext(userId: 'user-1'), isTrue);
     });
   });
 }

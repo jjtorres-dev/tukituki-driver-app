@@ -19,18 +19,22 @@ AuthenticatedUser _user({
   );
 }
 
-DriverApplication _application(DriverApplicationStatus status) {
+DriverApplication _application(
+  DriverApplicationStatus status, {
+  String? rejectionReason,
+}) {
   return DriverApplication(
     id: 'profile-1',
     userId: 'user-1',
     firstName: 'Juan',
     lastName: 'Torres',
     status: status,
+    rejectionReason: rejectionReason,
   );
 }
 
-DriverVehicle _vehicle() {
-  return const DriverVehicle(
+DriverVehicle _vehicle({VehicleStatus status = VehicleStatus.draft}) {
+  return DriverVehicle(
     id: 'vehicle-1',
     driverProfileId: 'profile-1',
     plate: '1234-AB',
@@ -39,11 +43,14 @@ DriverVehicle _vehicle() {
     year: 2024,
     color: 'Azul',
     ownership: VehicleOwnership.owned,
-    status: VehicleStatus.draft,
+    status: status,
   );
 }
 
-DriverDocument _completeDocument(DriverDocumentType type) {
+DriverDocument _completeDocument(
+  DriverDocumentType type, {
+  DriverDocumentStatus status = DriverDocumentStatus.draft,
+}) {
   final needsExpiresAt =
       type == DriverDocumentType.driverLicense ||
       type == DriverDocumentType.soat;
@@ -52,7 +59,7 @@ DriverDocument _completeDocument(DriverDocumentType type) {
     id: 'document-${type.value}',
     driverProfileId: 'profile-1',
     type: type,
-    status: DriverDocumentStatus.draft,
+    status: status,
     fileObjectKey: 'drivers/profile-1/documents/${type.value}.jpg',
     documentNumber: 'ABC123',
     issuedAt: '2024-01-01',
@@ -226,13 +233,24 @@ void main() {
       },
     );
 
-    test('REJECTED → rejected', () {
+    test('REJECTED → correctionsRequired, conserva vehicle/documents '
+        '(DRIVER-ONBOARDING-R3.8)', () {
+      final vehicle = _vehicle();
+      final documents = _allCompleteDocuments();
+
       final state = resolveDriverApplicationState(
         user: _user(),
-        application: _application(DriverApplicationStatus.rejected),
+        application: _application(
+          DriverApplicationStatus.rejected,
+          rejectionReason: 'Foto ilegible',
+        ),
+        vehicle: vehicle,
+        documents: documents,
       );
 
-      expect(state.kind, DriverSessionKind.rejected);
+      expect(state.kind, DriverSessionKind.correctionsRequired);
+      expect(state.vehicle, same(vehicle));
+      expect(state.documents, same(documents));
     });
 
     test('PENDING_REVIEW → pendingReview', () {
@@ -290,6 +308,136 @@ void main() {
 
       expect(state.application, same(application));
       expect(state.user.id, 'user-1');
+    });
+
+    test('DRAFT con vehicle/documento REJECTED (Backend reseteó el perfil a '
+        'DRAFT pero no el recurso observado) → correctionsRequired, nunca '
+        'draftDocumentsComplete (DRIVER-ONBOARDING-R3.8, decisión E)', () {
+      final documents = [
+        _completeDocument(
+          DriverDocumentType.driverLicense,
+          status: DriverDocumentStatus.rejected,
+        ),
+        _completeDocument(DriverDocumentType.soat),
+        _completeDocument(DriverDocumentType.vehicleRegistration),
+      ];
+
+      final state = resolveDriverApplicationState(
+        user: _user(),
+        application: _application(DriverApplicationStatus.draft),
+        vehicle: _vehicle(),
+        documents: documents,
+      );
+
+      expect(state.kind, DriverSessionKind.correctionsRequired);
+    });
+
+    test('DRAFT sin ninguna observación pendiente pero con '
+        'hasResubmissionContext=true → sigue correctionsRequired '
+        '(el marcador local, no Backend, decide que el ciclo de reenvío '
+        'sigue activo)', () {
+      final state = resolveDriverApplicationState(
+        user: _user(),
+        application: _application(DriverApplicationStatus.draft),
+        vehicle: _vehicle(),
+        documents: _allCompleteDocuments(),
+        hasResubmissionContext: true,
+      );
+
+      expect(state.kind, DriverSessionKind.correctionsRequired);
+    });
+
+    test('DRAFT sin observaciones y hasResubmissionContext=false → '
+        'draftDocumentsComplete (comportamiento normal, sin R3.8)', () {
+      final state = resolveDriverApplicationState(
+        user: _user(),
+        application: _application(DriverApplicationStatus.draft),
+        vehicle: _vehicle(),
+        documents: _allCompleteDocuments(),
+      );
+
+      expect(state.kind, DriverSessionKind.draftDocumentsComplete);
+    });
+  });
+
+  group('hasPendingDriverCorrections', () {
+    test('sin application → false', () {
+      expect(hasPendingDriverCorrections(application: null), isFalse);
+    });
+
+    test('application.rejectionReason no vacío → true', () {
+      expect(
+        hasPendingDriverCorrections(
+          application: _application(
+            DriverApplicationStatus.draft,
+            rejectionReason: 'Foto ilegible',
+          ),
+        ),
+        isTrue,
+      );
+    });
+
+    test('application.rejectionReason solo espacios → false', () {
+      expect(
+        hasPendingDriverCorrections(
+          application: _application(
+            DriverApplicationStatus.draft,
+            rejectionReason: '   ',
+          ),
+        ),
+        isFalse,
+      );
+    });
+
+    test('vehicle.status == rejected → true, aunque el perfil no tenga '
+        'rejectionReason', () {
+      expect(
+        hasPendingDriverCorrections(
+          application: _application(DriverApplicationStatus.draft),
+          vehicle: _vehicle(status: VehicleStatus.rejected),
+        ),
+        isTrue,
+      );
+    });
+
+    test('un documento requerido REJECTED → true', () {
+      expect(
+        hasPendingDriverCorrections(
+          application: _application(DriverApplicationStatus.draft),
+          documents: [
+            _completeDocument(
+              DriverDocumentType.soat,
+              status: DriverDocumentStatus.rejected,
+            ),
+          ],
+        ),
+        isTrue,
+      );
+    });
+
+    test('nunca usa application.status == REJECTED como señal — Backend lo '
+        'pone en cualquier reject aunque solo haya observado vehicle/'
+        'documentos', () {
+      expect(
+        hasPendingDriverCorrections(
+          application: _application(DriverApplicationStatus.rejected),
+          vehicle: _vehicle(),
+          documents: _allCompleteDocuments(),
+        ),
+        isFalse,
+      );
+    });
+
+    test('sin ninguna observación (perfil/vehicle/documentos limpios) → '
+        'false', () {
+      expect(
+        hasPendingDriverCorrections(
+          application: _application(DriverApplicationStatus.draft),
+          vehicle: _vehicle(),
+          documents: _allCompleteDocuments(),
+        ),
+        isFalse,
+      );
     });
   });
 }

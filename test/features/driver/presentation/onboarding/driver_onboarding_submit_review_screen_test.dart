@@ -98,6 +98,25 @@ DriverSessionState _completeState({
   );
 }
 
+/// Estado de reenvío tras corrección (`DRIVER-ONBOARDING-R3.8`): mismo
+/// shape que [_completeState] pero `kind: correctionsRequired` y sin
+/// ninguna observación pendiente por defecto (`_vehicle()`/
+/// `_allCompleteDocuments()` ya no tienen ningún `status: rejected`,
+/// y `_application()` no trae `rejectionReason`).
+DriverSessionState _resubmissionState({
+  DriverApplication? application,
+  DriverVehicle? vehicle,
+  List<DriverDocument>? documents,
+}) {
+  return DriverSessionState(
+    kind: DriverSessionKind.correctionsRequired,
+    user: _user(),
+    application: application ?? _application(),
+    vehicle: vehicle ?? _vehicle(),
+    documents: documents ?? _allCompleteDocuments(),
+  );
+}
+
 DioException _dioError({
   int? statusCode,
   Object? data,
@@ -764,6 +783,140 @@ void main() {
       },
     );
   });
+
+  group('DriverOnboardingSubmitReviewScreen — modo reenvío '
+      '(DRIVER-ONBOARDING-R3.8)', () {
+    testWidgets('correctionsRequired sin observaciones pendientes muestra '
+        '"Revisar y reenviar" y "Reenviar solicitud", sin botones Editar', (
+      tester,
+    ) async {
+      await _pumpScreen(tester, initialState: _resubmissionState());
+
+      expect(find.text('Revisar y reenviar'), findsOneWidget);
+      expect(find.text('Revisar y enviar'), findsNothing);
+      expect(find.text('Reenviar solicitud'), findsOneWidget);
+      expect(find.text('Enviar solicitud'), findsNothing);
+
+      expect(find.byKey(const Key('review-profile-edit-button')), findsNothing);
+      expect(find.byKey(const Key('review-vehicle-edit-button')), findsNothing);
+      expect(
+        find.byKey(const Key('review-documents-edit-button')),
+        findsNothing,
+      );
+    });
+
+    testWidgets('draftDocumentsComplete (envío inicial) sí muestra los botones '
+        'Editar — el modo reenvío no afecta el flujo normal', (tester) async {
+      await _pumpScreen(tester, initialState: _completeState());
+
+      expect(
+        find.byKey(const Key('review-profile-edit-button')),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('confirmar reenvío muestra "¿Reenviar tu solicitud?" y hace '
+        'POST /drivers/me/submit igual que un envío inicial', (tester) async {
+      final profileRepository = _FakeDriverProfileRepository();
+      await _pumpScreen(
+        tester,
+        initialState: _resubmissionState(),
+        profileRepository: profileRepository,
+      );
+
+      final submitButton = find.byKey(const Key('review-submit-button'));
+      await tester.ensureVisible(submitButton);
+      await tester.tap(submitButton);
+      await tester.pumpAndSettle();
+
+      expect(find.text('¿Reenviar tu solicitud?'), findsOneWidget);
+      expect(find.text('¿Enviar tu solicitud?'), findsNothing);
+
+      await tester.tap(find.byKey(const Key('review-confirm-submit-button')));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 20));
+
+      expect(profileRepository.submitCalls, 1);
+    });
+
+    testWidgets('reenvío exitoso limpia el contexto de reenvío local y navega '
+        'a review-status', (tester) async {
+      final profileRepository = _FakeDriverProfileRepository();
+      final authRepository = _FakeAuthRepository();
+      await _pumpScreen(
+        tester,
+        initialState: _resubmissionState(),
+        profileRepository: profileRepository,
+        authRepository: authRepository,
+      );
+
+      await _confirmSubmit(tester);
+
+      expect(find.text('REVIEW_STATUS_ROUTE'), findsOneWidget);
+      expect(authRepository.clearResubmissionContextCalls, 1);
+      expect(authRepository.lastClearResubmissionContextUserId, 'user-1');
+    });
+
+    testWidgets(
+      'envío inicial exitoso también limpia el marcador (idempotente, '
+      'no debería quedar activo por error)',
+      (tester) async {
+        final profileRepository = _FakeDriverProfileRepository();
+        final authRepository = _FakeAuthRepository();
+        await _pumpScreen(
+          tester,
+          initialState: _completeState(),
+          profileRepository: profileRepository,
+          authRepository: authRepository,
+        );
+
+        await _confirmSubmit(tester);
+
+        expect(authRepository.clearResubmissionContextCalls, 1);
+      },
+    );
+
+    testWidgets('correctionsRequired CON observaciones pendientes nunca es '
+        'usable — el gate de reenvío (decisión E) no depende de '
+        'confiar en el extra recibido', (tester) async {
+      final stillPending = _resubmissionState(
+        application: _application(),
+        vehicle: DriverVehicle(
+          id: 'vehicle-1',
+          driverProfileId: 'profile-1',
+          plate: 'J-2637',
+          brand: 'Honda',
+          model: 'Mototaxi',
+          year: 2022,
+          color: 'Azul',
+          ownership: VehicleOwnership.owned,
+          status: VehicleStatus.rejected,
+        ),
+      );
+
+      final authRepository = _FakeAuthRepository(
+        resolvedState: const DriverSessionState(
+          kind: DriverSessionKind.draftDocumentsIncomplete,
+          user: AuthenticatedUser(
+            id: 'user-1',
+            phoneE164: '+51987654321',
+            roles: ['PASSENGER'],
+            status: 'ACTIVE',
+            isPhoneVerified: true,
+          ),
+        ),
+      );
+
+      await _pumpScreen(
+        tester,
+        initialState: stillPending,
+        authRepository: authRepository,
+      );
+
+      expect(find.text('DOCUMENTS_ROUTE'), findsOneWidget);
+      expect(find.text('Revisar y reenviar'), findsNothing);
+    });
+  });
 }
 
 Future<void> _confirmSubmit(WidgetTester tester) async {
@@ -949,6 +1102,8 @@ class _FakeAuthRepository extends AuthRepository {
   int resolveSessionStateCalls = 0;
   int getDriverProfileCalls = 0;
   int clearSessionCalls = 0;
+  int clearResubmissionContextCalls = 0;
+  String? lastClearResubmissionContextUserId;
 
   @override
   Future<DriverSessionState> resolveSessionState() async {
@@ -975,6 +1130,12 @@ class _FakeAuthRepository extends AuthRepository {
   @override
   Future<void> clearSession() async {
     clearSessionCalls += 1;
+  }
+
+  @override
+  Future<void> clearResubmissionContext({required String userId}) async {
+    clearResubmissionContextCalls += 1;
+    lastClearResubmissionContextUserId = userId;
   }
 }
 

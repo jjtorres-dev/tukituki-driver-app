@@ -58,14 +58,21 @@ enum _SubmitErrorAction { none, profile, vehicle, documents }
 /// de "Solicitud en revisión" para `PENDING_REVIEW` — son conceptos
 /// distintos que casi comparten nombre.
 ///
-/// Solo llega aquí `DriverSessionKind.draftDocumentsComplete` (ver
-/// `driver_onboarding_routes.dart`). `initialState` llega ya resuelto
-/// vía `extra` (mismo `DriverSessionState` que `resolveSessionState()`
-/// calculó para decidir el routing) — evita 3 GETs redundantes
-/// (`drivers/me`, `drivers/me/vehicle`, `drivers/me/documents`). Si
-/// llega `null` (ruta abierta directamente, o después de una edición)
-/// o su `kind` ya no es `draftDocumentsComplete`, resuelve de nuevo y
-/// se autocorrige navegando a donde corresponda.
+/// Llega aquí `DriverSessionKind.draftDocumentsComplete` (envío
+/// inicial) o `correctionsRequired` sin observaciones pendientes
+/// (reenvío tras corrección, `DRIVER-ONBOARDING-R3.8` — decisión F:
+/// no existe una segunda pantalla de resumen, esta misma se reutiliza
+/// en modo "resubmission", derivado internamente en [_isResubmission]
+/// a partir del `kind` con el que se resolvió el estado). `initialState`
+/// llega ya resuelto vía `extra` (mismo `DriverSessionState` que
+/// `resolveSessionState()` calculó para decidir el routing) — evita
+/// GETs redundantes (`drivers/me`, `drivers/me/vehicle`,
+/// `drivers/me/documents`). Si llega `null` (ruta abierta
+/// directamente, o después de una edición) o ya no es usable (ver
+/// [_isUsable]), resuelve de nuevo y se autocorrige navegando a donde
+/// corresponda — nunca permite reenviar mientras
+/// `hasPendingDriverCorrections` sea `true` (decisión E, gate no
+/// negociable).
 class DriverOnboardingSubmitReviewScreen extends ConsumerStatefulWidget {
   const DriverOnboardingSubmitReviewScreen({super.key, this.initialState});
 
@@ -81,6 +88,18 @@ class _DriverOnboardingSubmitReviewScreenState
   DriverApplication? _application;
   DriverVehicle? _vehicle;
   List<DriverDocument>? _documents;
+
+  /// `DRIVER-ONBOARDING-R3.8B`: id de la cuenta dueña de esta
+  /// solicitud (`AuthenticatedUser.id`, nunca PII) — necesario para
+  /// limpiar el marcador de reenvío scoped por cuenta
+  /// (`clearResubmissionContext`) tras un submit exitoso.
+  String? _userId;
+
+  /// `true` cuando el estado que alimenta esta pantalla vino con
+  /// `kind == correctionsRequired` (reenvío tras corrección) en vez
+  /// de `draftDocumentsComplete` (envío inicial). Controla título,
+  /// texto del CTA/modal y oculta los botones "Editar" (decisión F/G).
+  bool _isResubmission = false;
 
   bool _loading = true;
   bool _loadError = false;
@@ -121,12 +140,33 @@ class _DriverOnboardingSubmitReviewScreenState
     }
   }
 
+  /// `draftDocumentsComplete` siempre es usable (envío inicial).
+  /// `correctionsRequired` solo es usable cuando ya no queda ninguna
+  /// observación pendiente (decisión E) — de lo contrario esta
+  /// pantalla nunca debe mostrar el resumen, por más que llegue vía
+  /// `extra`: `_loadFresh`/`didUpdateWidget` la redirigirán de vuelta
+  /// a "Correcciones requeridas".
   bool _isUsable(DriverSessionState? state) {
-    return state != null &&
-        state.kind == DriverSessionKind.draftDocumentsComplete;
+    if (state == null) {
+      return false;
+    }
+
+    if (state.kind == DriverSessionKind.draftDocumentsComplete) {
+      return true;
+    }
+
+    if (state.kind == DriverSessionKind.correctionsRequired) {
+      return !hasPendingDriverCorrections(
+        application: state.application,
+        vehicle: state.vehicle,
+        documents: state.documents,
+      );
+    }
+
+    return false;
   }
 
-  /// Reemplaza los tres campos juntos desde la misma fuente — nunca
+  /// Reemplaza los cuatro campos juntos desde la misma fuente — nunca
   /// conserva datos parciales de un `state` anterior. Llamador
   /// responsable de envolver en `setState` cuando corresponda (nunca
   /// dentro de `initState`, donde alcanza con asignar directamente).
@@ -134,6 +174,8 @@ class _DriverOnboardingSubmitReviewScreenState
     _application = state.application;
     _vehicle = state.vehicle;
     _documents = state.documents;
+    _userId = state.user.id;
+    _isResubmission = state.kind == DriverSessionKind.correctionsRequired;
     _loading = false;
     _loadError = false;
   }
@@ -153,16 +195,13 @@ class _DriverOnboardingSubmitReviewScreenState
         return;
       }
 
-      if (state.kind != DriverSessionKind.draftDocumentsComplete) {
+      if (!_isUsable(state)) {
         goToDriverSessionRoute(context, state);
         return;
       }
 
       setState(() {
-        _application = state.application;
-        _vehicle = state.vehicle;
-        _documents = state.documents;
-        _loading = false;
+        _assignFromState(state);
       });
     } catch (error) {
       debugPrint('Error cargando resumen Driver: $error');
@@ -274,7 +313,8 @@ class _DriverOnboardingSubmitReviewScreenState
 
     final confirmed = await showDialog<bool>(
       context: context,
-      builder: (dialogContext) => const _SubmitConfirmationDialog(),
+      builder: (dialogContext) =>
+          _SubmitConfirmationDialog(isResubmission: _isResubmission),
     );
 
     if (confirmed != true || !mounted) {
@@ -306,6 +346,12 @@ class _DriverOnboardingSubmitReviewScreenState
       }
 
       if (result.status == DriverApplicationStatus.pendingReview) {
+        await authRepository.clearResubmissionContext(userId: _userId!);
+
+        if (!mounted) {
+          return;
+        }
+
         context.go(DriverOnboardingRoutes.reviewStatus);
         return;
       }
@@ -415,6 +461,12 @@ class _DriverOnboardingSubmitReviewScreenState
       }
 
       if (application?.status == DriverApplicationStatus.pendingReview) {
+        await authRepository.clearResubmissionContext(userId: _userId!);
+
+        if (!mounted) {
+          return;
+        }
+
         context.go(DriverOnboardingRoutes.reviewStatus);
         return;
       }
@@ -532,9 +584,9 @@ class _DriverOnboardingSubmitReviewScreenState
         children: [
           const DriverOnboardingProgress(currentStep: 5),
           const SizedBox(height: 24),
-          const Text(
-            'Revisar y enviar',
-            style: TextStyle(
+          Text(
+            _isResubmission ? 'Revisar y reenviar' : 'Revisar y enviar',
+            style: const TextStyle(
               color: DriverPalette.greenPrimary,
               fontSize: 26,
               fontWeight: FontWeight.w800,
@@ -599,11 +651,11 @@ class _DriverOnboardingSubmitReviewScreenState
               child: AnimatedSwitcher(
                 duration: const Duration(milliseconds: 180),
                 child: _submitting
-                    ? const Row(
-                        key: ValueKey('review-submitting'),
+                    ? Row(
+                        key: const ValueKey('review-submitting'),
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          SizedBox(
+                          const SizedBox(
                             width: 18,
                             height: 18,
                             child: CircularProgressIndicator(
@@ -611,20 +663,22 @@ class _DriverOnboardingSubmitReviewScreenState
                               color: DriverPalette.cream,
                             ),
                           ),
-                          SizedBox(width: 10),
+                          const SizedBox(width: 10),
                           Text(
-                            'Enviando...',
-                            style: TextStyle(
+                            _isResubmission ? 'Reenviando...' : 'Enviando...',
+                            style: const TextStyle(
                               fontSize: 16,
                               fontWeight: FontWeight.w700,
                             ),
                           ),
                         ],
                       )
-                    : const Text(
-                        'Enviar solicitud',
-                        key: ValueKey('review-ready'),
-                        style: TextStyle(
+                    : Text(
+                        _isResubmission
+                            ? 'Reenviar solicitud'
+                            : 'Enviar solicitud',
+                        key: const ValueKey('review-ready'),
+                        style: const TextStyle(
                           fontSize: 16,
                           fontWeight: FontWeight.w700,
                         ),
@@ -644,7 +698,7 @@ class _DriverOnboardingSubmitReviewScreenState
     return _ReviewSectionCard(
       title: 'Sobre ti',
       editKey: const Key('review-profile-edit-button'),
-      onEdit: _editProfile,
+      onEdit: _isResubmission ? null : _editProfile,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
@@ -681,7 +735,7 @@ class _DriverOnboardingSubmitReviewScreenState
     return _ReviewSectionCard(
       title: 'Tu mototaxi',
       editKey: const Key('review-vehicle-edit-button'),
-      onEdit: _editVehicle,
+      onEdit: _isResubmission ? null : _editVehicle,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
@@ -702,7 +756,7 @@ class _DriverOnboardingSubmitReviewScreenState
     return _ReviewSectionCard(
       title: 'Tus documentos',
       editKey: const Key('review-documents-edit-button'),
-      onEdit: _editDocuments,
+      onEdit: _isResubmission ? null : _editDocuments,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
@@ -895,14 +949,19 @@ class _ReviewField extends StatelessWidget {
 class _ReviewSectionCard extends StatelessWidget {
   const _ReviewSectionCard({
     required this.title,
-    required this.editKey,
-    required this.onEdit,
+    this.editKey,
+    this.onEdit,
     required this.child,
   });
 
   final String title;
-  final Key editKey;
-  final VoidCallback onEdit;
+
+  /// `null` cuando `_isResubmission` es `true` — el botón "Editar" no
+  /// se renderiza en absoluto (decisión F: en modo reenvío las
+  /// correcciones se hacen únicamente desde "Correcciones
+  /// requeridas").
+  final Key? editKey;
+  final VoidCallback? onEdit;
   final Widget child;
 
   @override
@@ -930,16 +989,17 @@ class _ReviewSectionCard extends StatelessWidget {
                   ),
                 ),
               ),
-              TextButton(
-                key: editKey,
-                onPressed: onEdit,
-                style: TextButton.styleFrom(
-                  foregroundColor: DriverPalette.greenAvailable,
-                  padding: EdgeInsets.zero,
-                  minimumSize: const Size(0, 32),
+              if (onEdit != null)
+                TextButton(
+                  key: editKey,
+                  onPressed: onEdit,
+                  style: TextButton.styleFrom(
+                    foregroundColor: DriverPalette.greenAvailable,
+                    padding: EdgeInsets.zero,
+                    minimumSize: const Size(0, 32),
+                  ),
+                  child: const Text('Editar'),
                 ),
-                child: const Text('Editar'),
-              ),
             ],
           ),
           const SizedBox(height: 8),
@@ -1059,12 +1119,16 @@ class _SubmitErrorBanner extends StatelessWidget {
 }
 
 class _SubmitConfirmationDialog extends StatelessWidget {
-  const _SubmitConfirmationDialog();
+  const _SubmitConfirmationDialog({required this.isResubmission});
+
+  final bool isResubmission;
 
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
-      title: const Text('¿Enviar tu solicitud?'),
+      title: Text(
+        isResubmission ? '¿Reenviar tu solicitud?' : '¿Enviar tu solicitud?',
+      ),
       content: const Text(
         'Tu información será enviada al equipo TukiTuki para revisión.'
         '\n\n'
@@ -1080,7 +1144,9 @@ class _SubmitConfirmationDialog extends StatelessWidget {
         FilledButton(
           key: const Key('review-confirm-submit-button'),
           onPressed: () => Navigator.of(context).pop(true),
-          child: const Text('Enviar solicitud'),
+          child: Text(
+            isResubmission ? 'Reenviar solicitud' : 'Enviar solicitud',
+          ),
         ),
       ],
     );

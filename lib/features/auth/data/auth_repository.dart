@@ -190,25 +190,89 @@ class AuthRepository {
   /// consulta `drivers/me`, sin importar `isPhoneVerified`. La
   /// verificación OTP queda diferida hasta un proveedor SMS real
   /// (`OTP-R3`); no bloquea el onboarding de Driver.
+  ///
+  /// `DRIVER-ONBOARDING-R3.8`: `REJECTED` también carga `vehicle`/
+  /// `documents` (mismo GET que `DRAFT`) para poder construir
+  /// "Correcciones requeridas" con granularidad real. La primera vez
+  /// que se detecta `REJECTED` se marca el contexto de reenvío local
+  /// (`markResubmissionContext()`); ese marcador (no la Backend) es
+  /// lo único que permite reconocer un `DRAFT` ya corregido como
+  /// "todavía en ciclo de reenvío" tras cerrar y reabrir la app.
+  ///
+  /// `DRIVER-ONBOARDING-R3.8B`: además, cualquier estado en el que
+  /// Backend confirma inequívocamente que el ciclo terminó
+  /// (`PENDING_REVIEW`/`APPROVED`/`SUSPENDED`) limpia el marcador de
+  /// forma defensiva — refuerza (idempotente) la limpieza explícita
+  /// que ya hace `DriverOnboardingSubmitReviewScreen` tras un submit
+  /// exitoso, cubriendo el caso de que ese paso nunca llegara a
+  /// ejecutarse (p.ej. la app se cerró a mitad del submit).
   Future<DriverSessionState> resolveSessionState() async {
     final user = await getMe();
 
     final application = await getDriverProfile();
 
     final isDraft = application?.status == DriverApplicationStatus.draft;
+    final isRejected = application?.status == DriverApplicationStatus.rejected;
+    final noLongerNeedsResubmission =
+        application?.status == DriverApplicationStatus.pendingReview ||
+        application?.status == DriverApplicationStatus.approved ||
+        application?.status == DriverApplicationStatus.suspended;
 
-    final vehicle = isDraft ? await getVehicle() : null;
+    if (isRejected) {
+      await markResubmissionContext(userId: user.id);
+    } else if (noLongerNeedsResubmission) {
+      await clearResubmissionContext(userId: user.id);
+    }
 
-    final documents = isDraft && vehicle != null
+    final needsVehicle = isDraft || isRejected;
+
+    final vehicle = needsVehicle ? await getVehicle() : null;
+
+    final documents = needsVehicle && vehicle != null
         ? await getMyDocuments()
         : null;
+
+    final resubmissionContext = await hasResubmissionContext(userId: user.id);
 
     return resolveDriverApplicationState(
       user: user,
       application: application,
       vehicle: vehicle,
       documents: documents,
+      hasResubmissionContext: resubmissionContext,
     );
+  }
+
+  /// `DRIVER-ONBOARDING-R3.8`/`R3.8B`: marca localmente que la
+  /// solicitud de [userId] sigue en un ciclo de corrección/reenvío
+  /// tras un rechazo. Nunca almacena la razón de rechazo ni ningún
+  /// dato del expediente — solo un marcador no sensible, **scoped por
+  /// cuenta** (nunca un booleano global: dos conductores en el mismo
+  /// dispositivo no deben compartirlo). Sobrevive cerrar y reabrir la
+  /// app y cerrar/volver a iniciar sesión con la misma cuenta —
+  /// `clearSession()` (logout) deliberadamente **no** lo borra, ya
+  /// que terminar la sesión no termina el ciclo administrativo de la
+  /// solicitud. Se limpia explícitamente tras un reenvío exitoso
+  /// (`clearResubmissionContext()`, llamado desde
+  /// `DriverOnboardingSubmitReviewScreen` y, defensivamente, desde
+  /// `resolveSessionState()` en cualquier estado terminal).
+  Future<void> markResubmissionContext({required String userId}) async {
+    await _storage.write(
+      key: StorageKeys.driverResubmissionContext(userId),
+      value: 'true',
+    );
+  }
+
+  Future<bool> hasResubmissionContext({required String userId}) async {
+    final value = await _storage.read(
+      key: StorageKeys.driverResubmissionContext(userId),
+    );
+
+    return value == 'true';
+  }
+
+  Future<void> clearResubmissionContext({required String userId}) async {
+    await _storage.delete(key: StorageKeys.driverResubmissionContext(userId));
   }
 
   /// `POST auth/otp/request` — preparado para cuando exista
@@ -248,6 +312,12 @@ class AuthRepository {
     }
   }
 
+  /// `DRIVER-ONBOARDING-R3.8B`: deliberadamente **no** toca el
+  /// marcador de reenvío (`driverResubmissionContext`) — está scoped
+  /// por `userId`, así que nunca se filtra entre cuentas distintas en
+  /// el mismo dispositivo, y cerrar sesión no termina el ciclo
+  /// administrativo de la solicitud (ver `markResubmissionContext`).
+  /// Solo borra credenciales/identificadores de sesión.
   Future<void> clearSession() async {
     await _storage.delete(key: StorageKeys.accessToken);
 

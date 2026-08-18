@@ -36,8 +36,14 @@ enum DriverSessionKind {
   /// válida). Paso 4 completo — va a la foundation de Paso 5.
   draftDocumentsComplete,
 
-  /// `DriverProfile.status == REJECTED`.
-  rejected,
+  /// `DRIVER-ONBOARDING-R3.8`: hay al menos una observación pendiente
+  /// de corregir (`hasPendingDriverCorrections`), o ya no queda
+  /// ninguna pero el ciclo de reenvío sigue activo (ver
+  /// `AuthRepository.hasResubmissionContext()`). Nunca se llega aquí
+  /// solo por `application.status == REJECTED` — Backend pone ese
+  /// status en cualquier reject, incluso si observó únicamente
+  /// vehículo o documentos (ver `hasPendingDriverCorrections`).
+  correctionsRequired,
 
   /// `DriverProfile.status == PENDING_REVIEW`.
   pendingReview,
@@ -72,14 +78,15 @@ class DriverSessionState {
   final AuthenticatedUser user;
   final DriverApplication? application;
 
-  /// Presente cuando `kind` es `draftDocumentsIncomplete` o
-  /// `draftDocumentsComplete` (resultado de `GET drivers/me/vehicle`).
-  /// `null` en cualquier otro caso, incluido `draftNoVehicle`.
+  /// Presente cuando `kind` es `draftDocumentsIncomplete`,
+  /// `draftDocumentsComplete` o `correctionsRequired` (resultado de
+  /// `GET drivers/me/vehicle`). `null` en cualquier otro caso,
+  /// incluido `draftNoVehicle`.
   final DriverVehicle? vehicle;
 
-  /// Presente cuando `kind` es `draftDocumentsIncomplete` o
-  /// `draftDocumentsComplete` (resultado de `GET drivers/me/documents`).
-  /// `null` en cualquier otro caso.
+  /// Presente cuando `kind` es `draftDocumentsIncomplete`,
+  /// `draftDocumentsComplete` o `correctionsRequired` (resultado de
+  /// `GET drivers/me/documents`). `null` en cualquier otro caso.
   final List<DriverDocument>? documents;
 }
 
@@ -108,6 +115,48 @@ bool _hasAllRequiredDriverDocuments(List<DriverDocument> documents) {
   return true;
 }
 
+/// `true` si [application]/[vehicle]/[documents] tienen alguna
+/// observación pendiente de corregir (`DRIVER-ONBOARDING-R3.8`).
+///
+/// Replica exactamente la regla acordada con JuanJo: **nunca** usa
+/// `application.status == REJECTED` como criterio — Backend pone ese
+/// status en cualquier reject, incluso si observó únicamente el
+/// vehículo o un documento (verificado en `admin-driver-review.
+/// service.ts`: `profile.status = REJECTED` es incondicional). Solo
+/// cuenta la razón/estado de cada recurso individual:
+/// - `application.rejectionReason` no vacío (perfil observado);
+/// - `vehicle.status == rejected`;
+/// - algún documento de `requiredDriverOnboardingDocumentTypes` con
+///   `status == rejected` (los tipos legacy nunca cuentan).
+bool hasPendingDriverCorrections({
+  required DriverApplication? application,
+  DriverVehicle? vehicle,
+  List<DriverDocument>? documents,
+}) {
+  final profileReason = application?.rejectionReason?.trim();
+
+  if (profileReason != null && profileReason.isNotEmpty) {
+    return true;
+  }
+
+  if (vehicle?.status == VehicleStatus.rejected) {
+    return true;
+  }
+
+  if (documents != null) {
+    for (final type in requiredDriverOnboardingDocumentTypes) {
+      for (final document in documents) {
+        if (document.type == type &&
+            document.status == DriverDocumentStatus.rejected) {
+          return true;
+        }
+      }
+    }
+  }
+
+  return false;
+}
+
 /// Función pura: dado el usuario autenticado y su solicitud de
 /// conductor (si existe), decide a qué caso del routing corresponde.
 ///
@@ -118,19 +167,27 @@ bool _hasAllRequiredDriverDocuments(List<DriverDocument> documents) {
 /// `user.isPhoneVerified` deliberadamente no se lee aquí (MVP sin
 /// bloqueo de OTP, ver doc de `DriverSessionKind`).
 ///
-/// `vehicle` solo se usa cuando `application.status == DRAFT`, para
-/// distinguir Paso 3 de Paso 4/5 (ver `DriverSessionKind`). Se ignora
-/// en cualquier otro status — `AuthRepository.resolveSessionState()`
-/// no llama `GET drivers/me/vehicle` fuera de DRAFT.
+/// `vehicle`/`documents` se cargan cuando `application.status ==
+/// DRAFT` (para distinguir Paso 3/4/5, ver `DriverSessionKind`) o
+/// `REJECTED` (para construir "Correcciones requeridas",
+/// `DRIVER-ONBOARDING-R3.8`). Se ignoran en cualquier otro status —
+/// `AuthRepository.resolveSessionState()` no llama `GET drivers/me/
+/// vehicle`/`GET drivers/me/documents` fuera de esos dos casos.
 ///
-/// `documents` solo se usa cuando además `vehicle != null`, para
-/// distinguir Paso 4 de Paso 5 — `AuthRepository.resolveSessionState()`
-/// no llama `GET drivers/me/documents` si todavía no hay vehículo.
+/// `hasResubmissionContext` viene de un marcador local no sensible
+/// (`AuthRepository.hasResubmissionContext()`, `flutter_secure_
+/// storage`) — nunca de Backend: Backend no conserva historial de
+/// rechazos, así que un `DRAFT` ya corregido en todos sus recursos no
+/// trae ninguna señal propia de que viene de un rechazo. El marcador
+/// es la única forma de no perder "sigue en ciclo de reenvío" tras
+/// cerrar y reabrir la app tras corregir el perfil (que Backend
+/// resetea a `DRAFT` + `submittedAt: null` en el mismo PATCH).
 DriverSessionState resolveDriverApplicationState({
   required AuthenticatedUser user,
   required DriverApplication? application,
   DriverVehicle? vehicle,
   List<DriverDocument>? documents,
+  bool hasResubmissionContext = false,
 }) {
   if (application == null) {
     return DriverSessionState(kind: DriverSessionKind.noProfile, user: user);
@@ -143,6 +200,22 @@ DriverSessionState resolveDriverApplicationState({
           kind: DriverSessionKind.draftNoVehicle,
           user: user,
           application: application,
+        );
+      }
+
+      final hasPending = hasPendingDriverCorrections(
+        application: application,
+        vehicle: vehicle,
+        documents: documents,
+      );
+
+      if (hasPending || hasResubmissionContext) {
+        return DriverSessionState(
+          kind: DriverSessionKind.correctionsRequired,
+          user: user,
+          application: application,
+          vehicle: vehicle,
+          documents: documents,
         );
       }
 
@@ -161,9 +234,11 @@ DriverSessionState resolveDriverApplicationState({
       );
     case DriverApplicationStatus.rejected:
       return DriverSessionState(
-        kind: DriverSessionKind.rejected,
+        kind: DriverSessionKind.correctionsRequired,
         user: user,
         application: application,
+        vehicle: vehicle,
+        documents: documents,
       );
     case DriverApplicationStatus.pendingReview:
       return DriverSessionState(

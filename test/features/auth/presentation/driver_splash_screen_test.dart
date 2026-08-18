@@ -156,15 +156,16 @@ void main() {
     },
   );
 
-  testWidgets('REJECTED navega a la pantalla de corrección', (tester) async {
+  testWidgets('correctionsRequired navega a la pantalla de correcciones '
+      '(DRIVER-ONBOARDING-R3.8)', (tester) async {
     final repository = _FakeAuthRepository(
-      results: [_stateOf(DriverSessionKind.rejected)],
+      results: [_stateOf(DriverSessionKind.correctionsRequired)],
     );
     await _pumpSplash(tester, repository);
 
     await _finishInitialDelay(tester);
 
-    expect(find.text('REJECTED_ROUTE'), findsOneWidget);
+    expect(find.text('CORRECTIONS_ROUTE'), findsOneWidget);
   });
 
   testWidgets('PENDING_REVIEW navega a la pantalla de revisión', (
@@ -397,14 +398,9 @@ Future<void> _pumpSplash(
             const Scaffold(body: Text('SUBMIT_REVIEW_ROUTE')),
       ),
       GoRoute(
-        path: '/onboarding/start',
+        path: '/onboarding/corrections',
         builder: (context, state) =>
-            const Scaffold(body: Text('ONBOARDING_START_ROUTE')),
-      ),
-      GoRoute(
-        path: '/onboarding/rejected',
-        builder: (context, state) =>
-            const Scaffold(body: Text('REJECTED_ROUTE')),
+            const Scaffold(body: Text('CORRECTIONS_ROUTE')),
       ),
       GoRoute(
         path: '/onboarding/review-status',

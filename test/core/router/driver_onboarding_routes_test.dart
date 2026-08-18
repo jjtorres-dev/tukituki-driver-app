@@ -23,8 +23,8 @@ void main() {
         DriverOnboardingRoutes.review,
       );
       expect(
-        routeForDriverSessionKind(DriverSessionKind.rejected),
-        DriverOnboardingRoutes.rejected,
+        routeForDriverSessionKind(DriverSessionKind.correctionsRequired),
+        DriverOnboardingRoutes.corrections,
       );
       expect(
         routeForDriverSessionKind(DriverSessionKind.pendingReview),

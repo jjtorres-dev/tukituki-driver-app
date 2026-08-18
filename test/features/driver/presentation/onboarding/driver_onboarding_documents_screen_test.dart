@@ -965,6 +965,103 @@ void main() {
       expect(find.text('LOGIN_ROUTE'), findsNothing);
     });
   });
+
+  group('DriverOnboardingDocumentsScreen — args de corrección '
+      '(DRIVER-ONBOARDING-R3.8)', () {
+    testWidgets('editableDocumentTypes restringe acciones a solo el tipo '
+        'observado — los otros dos quedan solo-lectura, sin '
+        'Editar/Cambiar/Agregar', (tester) async {
+      final documents = requiredDriverOnboardingDocumentTypes
+          .map(_completeDocument)
+          .toList();
+
+      await _pumpScreen(
+        tester,
+        authRepository: _FakeAuthRepository(documents: documents),
+        args: const DriverOnboardingDocumentsScreenArgs(
+          editableDocumentTypes: {DriverDocumentType.soat},
+        ),
+      );
+
+      expect(
+        find.byKey(const Key('documents-soat-edit-data-button')),
+        findsOneWidget,
+      );
+
+      expect(
+        find.byKey(const Key('documents-license-readonly-badge')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const Key('documents-vehicle-registration-readonly-badge')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const Key('documents-license-edit-data-button')),
+        findsNothing,
+      );
+      expect(
+        find.byKey(
+          const Key('documents-vehicle-registration-edit-data-button'),
+        ),
+        findsNothing,
+      );
+      expect(
+        find.byKey(const Key('documents-license-change-button')),
+        findsNothing,
+      );
+    });
+
+    testWidgets('sin args (o editableDocumentTypes null) mantiene el '
+        'comportamiento sin restricción de R3.6/R3.7', (tester) async {
+      final documents = requiredDriverOnboardingDocumentTypes
+          .map(_completeDocument)
+          .toList();
+
+      await _pumpScreen(
+        tester,
+        authRepository: _FakeAuthRepository(documents: documents),
+      );
+
+      expect(
+        find.byKey(const Key('documents-license-edit-data-button')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const Key('documents-soat-edit-data-button')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(
+          const Key('documents-vehicle-registration-edit-data-button'),
+        ),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('focusDocumentType hace scroll hasta la tarjeta observada al '
+        'abrir la pantalla', (tester) async {
+      final documents = requiredDriverOnboardingDocumentTypes
+          .map(_completeDocument)
+          .toList();
+
+      await _pumpScreen(
+        tester,
+        authRepository: _FakeAuthRepository(documents: documents),
+        args: const DriverOnboardingDocumentsScreenArgs(
+          focusDocumentType: DriverDocumentType.vehicleRegistration,
+        ),
+      );
+
+      await tester.pumpAndSettle();
+
+      final scrollable = tester.state<ScrollableState>(
+        find.byType(Scrollable).first,
+      );
+
+      expect(scrollable.position.pixels, greaterThan(0));
+    });
+  });
 }
 
 Future<void> _pickFile(WidgetTester tester, String slug, String option) async {
@@ -1002,6 +1099,7 @@ Future<void> _pumpScreen(
   _FakeDriverPhotoUploader? photoUploader,
   _FakeDriverDocumentRepository? documentRepository,
   bool pushedFromReview = false,
+  DriverOnboardingDocumentsScreenArgs? args,
 }) async {
   final router = GoRouter(
     initialLocation: pushedFromReview ? '/root' : '/onboarding/documents',
@@ -1012,7 +1110,8 @@ Future<void> _pumpScreen(
           body: Center(
             child: TextButton(
               key: const Key('open-documents-from-review'),
-              onPressed: () => context.push(DriverOnboardingRoutes.documents),
+              onPressed: () =>
+                  context.push(DriverOnboardingRoutes.documents, extra: args),
               child: const Text('open'),
             ),
           ),
@@ -1020,7 +1119,11 @@ Future<void> _pumpScreen(
       ),
       GoRoute(
         path: '/onboarding/documents',
-        builder: (context, state) => const DriverOnboardingDocumentsScreen(),
+        builder: (context, state) => DriverOnboardingDocumentsScreen(
+          args: pushedFromReview
+              ? state.extra as DriverOnboardingDocumentsScreenArgs?
+              : args,
+        ),
       ),
       GoRoute(
         path: '/login',

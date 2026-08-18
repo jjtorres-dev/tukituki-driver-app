@@ -39,19 +39,19 @@ class DriverOnboardingRoutes {
   /// como edición de documentos desde "Editar" en Paso 5.
   static const documents = '/onboarding/documents';
 
-  /// "Revisar y enviar" — Paso 5 real (`DRIVER-ONBOARDING-R3.7`). Solo
-  /// `draftDocumentsComplete` llega aquí desde el routing.
+  /// "Revisar y enviar" — Paso 5 real (`DRIVER-ONBOARDING-R3.7`).
+  /// Llega aquí `draftDocumentsComplete` (envío inicial) o
+  /// `correctionsRequired` sin observaciones pendientes (reenvío tras
+  /// corrección, `DRIVER-ONBOARDING-R3.8` — ver
+  /// `DriverOnboardingSubmitReviewScreen._isUsable`).
   static const review = '/onboarding/review';
 
-  /// Foundation histórica de DRAFT con Pasos 2-4 completos, previa a
-  /// `R3.7`. Ya no es destino de ningún `DriverSessionKind` — se
-  /// conserva únicamente porque `DriverOnboardingRejectedScreen`
-  /// ("Corregir solicitud") todavía navega aquí; la corrección
-  /// granular de una solicitud `REJECTED` queda diferida a
-  /// `DRIVER-ONBOARDING-R3.8` (ver `decisiones.md`).
-  static const start = '/onboarding/start';
+  /// "Correcciones requeridas" (`DRIVER-ONBOARDING-R3.8`). Único
+  /// destino de `DriverSessionKind.correctionsRequired` mientras haya
+  /// al menos una observación pendiente — reemplaza por completo a la
+  /// antigua `DriverOnboardingRejectedScreen`/foundation `start`.
+  static const corrections = '/onboarding/corrections';
 
-  static const rejected = '/onboarding/rejected';
   static const reviewStatus = '/onboarding/review-status';
   static const suspended = '/suspended';
 
@@ -74,8 +74,8 @@ String routeForDriverSessionKind(DriverSessionKind kind) {
       return DriverOnboardingRoutes.documents;
     case DriverSessionKind.draftDocumentsComplete:
       return DriverOnboardingRoutes.review;
-    case DriverSessionKind.rejected:
-      return DriverOnboardingRoutes.rejected;
+    case DriverSessionKind.correctionsRequired:
+      return DriverOnboardingRoutes.corrections;
     case DriverSessionKind.pendingReview:
       return DriverOnboardingRoutes.reviewStatus;
     case DriverSessionKind.approved:
@@ -89,23 +89,24 @@ String routeForDriverSessionKind(DriverSessionKind kind) {
 }
 
 /// Navega al path correspondiente a [state], pasando `extra` cuando la
-/// pantalla destino lo necesita: `application` para rechazada/
-/// suspendida (mostrar el motivo), o el [DriverSessionState] completo
-/// para "Revisar y enviar" (`application`+`vehicle`+`documents`, ya
-/// resueltos — evita que esa pantalla repita 3 GETs que
-/// `resolveSessionState()` ya hizo). Único punto donde Splash/Login/
-/// pantallas de estado y edición deciden a dónde ir tras resolver la
-/// sesión — evita repetir este mapeo en cada pantalla.
+/// pantalla destino lo necesita: `application` para suspendida
+/// (mostrar el motivo), o el [DriverSessionState] completo para
+/// "Revisar y enviar"/"Correcciones requeridas"
+/// (`application`+`vehicle`+`documents`, ya resueltos — evita que esas
+/// pantallas repitan GETs que `resolveSessionState()` ya hizo). Único
+/// punto donde Splash/Login/pantallas de estado y edición deciden a
+/// dónde ir tras resolver la sesión — evita repetir este mapeo en cada
+/// pantalla.
 void goToDriverSessionRoute(BuildContext context, DriverSessionState state) {
   final route = routeForDriverSessionKind(state.kind);
 
-  if (route == DriverOnboardingRoutes.rejected ||
-      route == DriverOnboardingRoutes.suspended) {
+  if (route == DriverOnboardingRoutes.suspended) {
     context.go(route, extra: state.application);
     return;
   }
 
-  if (route == DriverOnboardingRoutes.review) {
+  if (route == DriverOnboardingRoutes.review ||
+      route == DriverOnboardingRoutes.corrections) {
     context.go(route, extra: state);
     return;
   }

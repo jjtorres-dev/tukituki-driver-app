@@ -10,10 +10,9 @@ import '../../features/driver/presentation/driver_cash_payment_screen.dart';
 import '../../features/driver/presentation/driver_completed_payment_screen.dart';
 import '../../features/driver/presentation/driver_home_screen.dart';
 import '../../features/driver/presentation/onboarding/driver_onboarding_about_you_screen.dart';
+import '../../features/driver/presentation/onboarding/driver_onboarding_corrections_screen.dart';
 import '../../features/driver/presentation/onboarding/driver_onboarding_documents_screen.dart';
-import '../../features/driver/presentation/onboarding/driver_onboarding_rejected_screen.dart';
 import '../../features/driver/presentation/onboarding/driver_onboarding_review_screen.dart';
-import '../../features/driver/presentation/onboarding/driver_onboarding_start_screen.dart';
 import '../../features/driver/presentation/onboarding/driver_onboarding_state_error_screen.dart';
 import '../../features/driver/presentation/onboarding/driver_onboarding_submit_review_screen.dart';
 import '../../features/driver/presentation/onboarding/driver_onboarding_suspended_screen.dart';
@@ -49,7 +48,9 @@ final appRouter = GoRouter(
     ),
     GoRoute(
       path: DriverOnboardingRoutes.documents,
-      builder: (context, state) => const DriverOnboardingDocumentsScreen(),
+      builder: (context, state) => DriverOnboardingDocumentsScreen(
+        args: state.extra as DriverOnboardingDocumentsScreenArgs?,
+      ),
     ),
     GoRoute(
       path: DriverOnboardingRoutes.review,
@@ -58,13 +59,9 @@ final appRouter = GoRouter(
       ),
     ),
     GoRoute(
-      path: DriverOnboardingRoutes.start,
-      builder: (context, state) => const DriverOnboardingStartScreen(),
-    ),
-    GoRoute(
-      path: DriverOnboardingRoutes.rejected,
-      builder: (context, state) => DriverOnboardingRejectedScreen(
-        application: state.extra as DriverApplication?,
+      path: DriverOnboardingRoutes.corrections,
+      builder: (context, state) => DriverOnboardingCorrectionsScreen(
+        initialState: state.extra as DriverSessionState?,
       ),
     ),
     GoRoute(

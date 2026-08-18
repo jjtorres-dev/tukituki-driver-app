@@ -354,8 +354,27 @@ enum _DocumentPickSource { camera, gallery, pdf }
 /// misma categoría (verificado en `DRIVER-ONBOARDING-R3.6A`,
 /// `completeDocumentUpload` en `driver-documents.service.ts`), y
 /// preserva la metadata existente en el reemplazo.
+///
+/// `DRIVER-ONBOARDING-R3.8`: [args] permite reutilizar esta misma
+/// pantalla desde "Correcciones requeridas" — [focusDocumentType]
+/// hace scroll-to al abrir (decisión D) y [editableDocumentTypes]
+/// restringe qué tarjetas admiten acciones (decisión C: las no
+/// observadas se muestran solo-lectura, sin edición). `null` en
+/// cualquiera de los dos = comportamiento sin restricción (R3.6/R3.7).
+class DriverOnboardingDocumentsScreenArgs {
+  const DriverOnboardingDocumentsScreenArgs({
+    this.focusDocumentType,
+    this.editableDocumentTypes,
+  });
+
+  final DriverDocumentType? focusDocumentType;
+  final Set<DriverDocumentType>? editableDocumentTypes;
+}
+
 class DriverOnboardingDocumentsScreen extends ConsumerStatefulWidget {
-  const DriverOnboardingDocumentsScreen({super.key});
+  const DriverOnboardingDocumentsScreen({super.key, this.args});
+
+  final DriverOnboardingDocumentsScreenArgs? args;
 
   @override
   ConsumerState<DriverOnboardingDocumentsScreen> createState() =>
@@ -369,8 +388,13 @@ class _DriverOnboardingDocumentsScreenState
       type: _DocumentCardState(type),
   };
 
+  final Map<DriverDocumentType, GlobalKey> _cardKeys = {
+    for (final type in requiredDriverOnboardingDocumentTypes) type: GlobalKey(),
+  };
+
   bool _loading = true;
   bool _loadError = false;
+  bool _scrolledToFocus = false;
 
   @override
   void initState() {
@@ -422,6 +446,12 @@ class _DriverOnboardingDocumentsScreenState
 
         _loading = false;
       });
+
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          _scrollToFocusedDocumentIfNeeded();
+        }
+      });
     } catch (error) {
       debugPrint('Error cargando documentos Driver: $error');
 
@@ -434,6 +464,28 @@ class _DriverOnboardingDocumentsScreenState
         _loadError = true;
       });
     }
+  }
+
+  void _scrollToFocusedDocumentIfNeeded() {
+    final focusType = widget.args?.focusDocumentType;
+
+    if (focusType == null || _scrolledToFocus) {
+      return;
+    }
+
+    _scrolledToFocus = true;
+
+    final cardContext = _cardKeys[focusType]?.currentContext;
+
+    if (cardContext == null) {
+      return;
+    }
+
+    Scrollable.ensureVisible(
+      cardContext,
+      duration: const Duration(milliseconds: 300),
+      alignment: 0.05,
+    );
   }
 
   Future<void> _openSourceSheet(_DocumentCardState card) async {
@@ -888,7 +940,10 @@ class _DriverOnboardingDocumentsScreenState
           ),
           const SizedBox(height: 24),
           for (final type in requiredDriverOnboardingDocumentTypes) ...[
-            _buildCard(_cards[type]!),
+            KeyedSubtree(
+              key: _cardKeys[type],
+              child: _buildCard(_cards[type]!),
+            ),
             const SizedBox(height: 16),
           ],
           const SizedBox(height: 8),
@@ -922,6 +977,14 @@ class _DriverOnboardingDocumentsScreenState
 
   Widget _buildCard(_DocumentCardState card) {
     final slug = _slugForType(card.type);
+
+    final editableTypes = widget.args?.editableDocumentTypes;
+    final isEditable =
+        editableTypes == null || editableTypes.contains(card.type);
+
+    if (!isEditable) {
+      return _buildReadOnlyCard(card, slug);
+    }
 
     return Container(
       key: Key('documents-$slug-card'),
@@ -1024,6 +1087,57 @@ class _DriverOnboardingDocumentsScreenState
               ),
             ),
           ],
+        ],
+      ),
+    );
+  }
+
+  /// `DRIVER-ONBOARDING-R3.8`: tarjeta de un documento fuera de
+  /// `editableDocumentTypes` (decisión C) — solo lectura, sin
+  /// selector de archivo ni "Editar datos". Solo se llega aquí desde
+  /// "Correcciones requeridas" enfocando un único documento
+  /// observado; los otros dos ya están completos y aprobados/no
+  /// observados, así que basta con la insignia de "cargado".
+  Widget _buildReadOnlyCard(_DocumentCardState card, String slug) {
+    return Container(
+      key: Key('documents-$slug-card'),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFBF7EA),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0xFFE7E0CB)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            _titleForType(card.type),
+            style: const TextStyle(
+              color: DriverPalette.greenPrimary,
+              fontSize: 16,
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+          const SizedBox(height: 12),
+          Row(
+            key: Key('documents-$slug-readonly-badge'),
+            children: const [
+              Icon(
+                Icons.check_circle,
+                color: DriverPalette.greenAvailable,
+                size: 18,
+              ),
+              SizedBox(width: 6),
+              Text(
+                'Documento cargado',
+                style: TextStyle(
+                  color: DriverPalette.greenPrimary,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ],
+          ),
         ],
       ),
     );
