@@ -5,6 +5,7 @@ import 'package:dio/dio.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:driver/features/driver/data/driver_storage_repository.dart';
+import 'package:driver/features/driver/domain/driver_document.dart';
 
 class _ScriptedAdapter implements HttpClientAdapter {
   _ScriptedAdapter(this.responses);
@@ -151,6 +152,49 @@ void main() {
           objectKey: 'drivers/profile-1/profile/abc.jpg',
         ),
         throwsA(isA<DioException>()),
+      );
+    });
+  });
+
+  group('storageCategoryForDriverDocumentType', () {
+    test('mapea cada tipo del Paso 4 a su categoría exacta de Storage', () {
+      expect(
+        storageCategoryForDriverDocumentType(DriverDocumentType.driverLicense),
+        driverLicenseStorageCategory,
+      );
+      expect(
+        storageCategoryForDriverDocumentType(DriverDocumentType.soat),
+        soatStorageCategory,
+      );
+      expect(
+        storageCategoryForDriverDocumentType(
+          DriverDocumentType.vehicleRegistration,
+        ),
+        vehicleRegistrationStorageCategory,
+      );
+      expect(driverLicenseStorageCategory, 'DRIVER_LICENSE');
+      expect(soatStorageCategory, 'SOAT');
+      expect(vehicleRegistrationStorageCategory, 'VEHICLE_REGISTRATION');
+    });
+
+    test('lanza para tipos legacy que este onboarding nunca crea', () {
+      expect(
+        () => storageCategoryForDriverDocumentType(DriverDocumentType.dniFront),
+        throwsArgumentError,
+      );
+      expect(
+        () => storageCategoryForDriverDocumentType(DriverDocumentType.dniBack),
+        throwsArgumentError,
+      );
+      expect(
+        () => storageCategoryForDriverDocumentType(
+          DriverDocumentType.profilePhoto,
+        ),
+        throwsArgumentError,
+      );
+      expect(
+        () => storageCategoryForDriverDocumentType(DriverDocumentType.unknown),
+        throwsArgumentError,
       );
     });
   });

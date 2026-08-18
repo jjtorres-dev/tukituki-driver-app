@@ -9,6 +9,7 @@ import '../../features/driver/presentation/driver_cash_payment_screen.dart';
 import '../../features/driver/presentation/driver_completed_payment_screen.dart';
 import '../../features/driver/presentation/driver_home_screen.dart';
 import '../../features/driver/presentation/onboarding/driver_onboarding_about_you_screen.dart';
+import '../../features/driver/presentation/onboarding/driver_onboarding_documents_screen.dart';
 import '../../features/driver/presentation/onboarding/driver_onboarding_rejected_screen.dart';
 import '../../features/driver/presentation/onboarding/driver_onboarding_review_screen.dart';
 import '../../features/driver/presentation/onboarding/driver_onboarding_start_screen.dart';
@@ -39,6 +40,10 @@ final appRouter = GoRouter(
     GoRoute(
       path: DriverOnboardingRoutes.vehicle,
       builder: (context, state) => const DriverOnboardingVehicleScreen(),
+    ),
+    GoRoute(
+      path: DriverOnboardingRoutes.documents,
+      builder: (context, state) => const DriverOnboardingDocumentsScreen(),
     ),
     GoRoute(
       path: DriverOnboardingRoutes.start,

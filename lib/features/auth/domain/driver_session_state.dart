@@ -1,4 +1,5 @@
 import '../../driver/domain/driver_application.dart';
+import '../../driver/domain/driver_document.dart';
 import '../../driver/domain/driver_vehicle.dart';
 import 'authenticated_user.dart';
 
@@ -23,9 +24,17 @@ enum DriverSessionKind {
   /// 404. Paso 3 ("Tu mototaxi") todavía no se completó.
   draftNoVehicle,
 
-  /// `DriverProfile.status == DRAFT` y `GET drivers/me/vehicle` →
-  /// 200. Paso 3 ya completo — va a la foundation de Paso 4.
-  draftWithVehicle,
+  /// `DriverProfile.status == DRAFT`, `GET drivers/me/vehicle` → 200
+  /// y `GET drivers/me/documents` indica que falta al menos uno de
+  /// los 3 documentos requeridos (ver
+  /// `requiredDriverOnboardingDocumentTypes`/`isDriverDocumentComplete`).
+  /// Paso 3 completo, Paso 4 ("Tus documentos") todavía no.
+  draftDocumentsIncomplete,
+
+  /// `DriverProfile.status == DRAFT`, vehículo existente y los 3
+  /// documentos requeridos están completos (archivo + metadata
+  /// válida). Paso 4 completo — va a la foundation de Paso 5.
+  draftDocumentsComplete,
 
   /// `DriverProfile.status == REJECTED`.
   rejected,
@@ -56,16 +65,47 @@ class DriverSessionState {
     required this.user,
     this.application,
     this.vehicle,
+    this.documents,
   });
 
   final DriverSessionKind kind;
   final AuthenticatedUser user;
   final DriverApplication? application;
 
-  /// Solo presente cuando `kind == draftWithVehicle` (resultado de
-  /// `GET drivers/me/vehicle`). `null` en cualquier otro caso,
-  /// incluido `draftNoVehicle`.
+  /// Presente cuando `kind` es `draftDocumentsIncomplete` o
+  /// `draftDocumentsComplete` (resultado de `GET drivers/me/vehicle`).
+  /// `null` en cualquier otro caso, incluido `draftNoVehicle`.
   final DriverVehicle? vehicle;
+
+  /// Presente cuando `kind` es `draftDocumentsIncomplete` o
+  /// `draftDocumentsComplete` (resultado de `GET drivers/me/documents`).
+  /// `null` en cualquier otro caso.
+  final List<DriverDocument>? documents;
+}
+
+/// `true` si [documents] cubre completo cada uno de
+/// `requiredDriverOnboardingDocumentTypes` (archivo + metadata
+/// válida por tipo, ver `isDriverDocumentComplete`). Usa el primer
+/// documento que coincida con cada tipo — `drivers/me/documents`
+/// tiene como máximo un documento por tipo (constraint única en
+/// Backend).
+bool _hasAllRequiredDriverDocuments(List<DriverDocument> documents) {
+  for (final type in requiredDriverOnboardingDocumentTypes) {
+    DriverDocument? match;
+
+    for (final document in documents) {
+      if (document.type == type) {
+        match = document;
+        break;
+      }
+    }
+
+    if (!isDriverDocumentComplete(match)) {
+      return false;
+    }
+  }
+
+  return true;
 }
 
 /// Función pura: dado el usuario autenticado y su solicitud de
@@ -79,13 +119,18 @@ class DriverSessionState {
 /// bloqueo de OTP, ver doc de `DriverSessionKind`).
 ///
 /// `vehicle` solo se usa cuando `application.status == DRAFT`, para
-/// distinguir Paso 3 de Paso 4 (ver `DriverSessionKind`). Se ignora
+/// distinguir Paso 3 de Paso 4/5 (ver `DriverSessionKind`). Se ignora
 /// en cualquier otro status — `AuthRepository.resolveSessionState()`
 /// no llama `GET drivers/me/vehicle` fuera de DRAFT.
+///
+/// `documents` solo se usa cuando además `vehicle != null`, para
+/// distinguir Paso 4 de Paso 5 — `AuthRepository.resolveSessionState()`
+/// no llama `GET drivers/me/documents` si todavía no hay vehículo.
 DriverSessionState resolveDriverApplicationState({
   required AuthenticatedUser user,
   required DriverApplication? application,
   DriverVehicle? vehicle,
+  List<DriverDocument>? documents,
 }) {
   if (application == null) {
     return DriverSessionState(kind: DriverSessionKind.noProfile, user: user);
@@ -93,13 +138,26 @@ DriverSessionState resolveDriverApplicationState({
 
   switch (application.status) {
     case DriverApplicationStatus.draft:
+      if (vehicle == null) {
+        return DriverSessionState(
+          kind: DriverSessionKind.draftNoVehicle,
+          user: user,
+          application: application,
+        );
+      }
+
+      final hasAllDocuments = _hasAllRequiredDriverDocuments(
+        documents ?? const [],
+      );
+
       return DriverSessionState(
-        kind: vehicle == null
-            ? DriverSessionKind.draftNoVehicle
-            : DriverSessionKind.draftWithVehicle,
+        kind: hasAllDocuments
+            ? DriverSessionKind.draftDocumentsComplete
+            : DriverSessionKind.draftDocumentsIncomplete,
         user: user,
         application: application,
         vehicle: vehicle,
+        documents: documents,
       );
     case DriverApplicationStatus.rejected:
       return DriverSessionState(

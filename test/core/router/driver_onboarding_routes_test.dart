@@ -15,7 +15,11 @@ void main() {
         DriverOnboardingRoutes.vehicle,
       );
       expect(
-        routeForDriverSessionKind(DriverSessionKind.draftWithVehicle),
+        routeForDriverSessionKind(DriverSessionKind.draftDocumentsIncomplete),
+        DriverOnboardingRoutes.documents,
+      );
+      expect(
+        routeForDriverSessionKind(DriverSessionKind.draftDocumentsComplete),
         DriverOnboardingRoutes.start,
       );
       expect(
@@ -45,20 +49,25 @@ void main() {
     });
 
     test('noProfile → Sobre ti; draftNoVehicle → Tu mototaxi; '
-        'draftWithVehicle → foundation — las tres van a pantallas distintas '
-        '(DRIVER-ONBOARDING-R3.5)', () {
+        'draftDocumentsIncomplete → Tus documentos; '
+        'draftDocumentsComplete → foundation — las cuatro van a pantallas '
+        'distintas (DRIVER-ONBOARDING-R3.6)', () {
       final aboutYou = routeForDriverSessionKind(DriverSessionKind.noProfile);
       final vehicleStep = routeForDriverSessionKind(
         DriverSessionKind.draftNoVehicle,
       );
+      final documentsStep = routeForDriverSessionKind(
+        DriverSessionKind.draftDocumentsIncomplete,
+      );
       final foundation = routeForDriverSessionKind(
-        DriverSessionKind.draftWithVehicle,
+        DriverSessionKind.draftDocumentsComplete,
       );
 
       expect(aboutYou, DriverOnboardingRoutes.aboutYou);
       expect(vehicleStep, DriverOnboardingRoutes.vehicle);
+      expect(documentsStep, DriverOnboardingRoutes.documents);
       expect(foundation, DriverOnboardingRoutes.start);
-      expect({aboutYou, vehicleStep, foundation}, hasLength(3));
+      expect({aboutYou, vehicleStep, documentsStep, foundation}, hasLength(4));
     });
 
     test('approved es el único kind que enruta a Home', () {

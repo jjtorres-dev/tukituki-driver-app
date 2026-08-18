@@ -3,6 +3,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:driver/features/auth/domain/authenticated_user.dart';
 import 'package:driver/features/auth/domain/driver_session_state.dart';
 import 'package:driver/features/driver/domain/driver_application.dart';
+import 'package:driver/features/driver/domain/driver_document.dart';
 import 'package:driver/features/driver/domain/driver_vehicle.dart';
 
 AuthenticatedUser _user({
@@ -40,6 +41,27 @@ DriverVehicle _vehicle() {
     ownership: VehicleOwnership.owned,
     status: VehicleStatus.draft,
   );
+}
+
+DriverDocument _completeDocument(DriverDocumentType type) {
+  final needsExpiresAt =
+      type == DriverDocumentType.driverLicense ||
+      type == DriverDocumentType.soat;
+
+  return DriverDocument(
+    id: 'document-${type.value}',
+    driverProfileId: 'profile-1',
+    type: type,
+    status: DriverDocumentStatus.draft,
+    fileObjectKey: 'drivers/profile-1/documents/${type.value}.jpg',
+    documentNumber: 'ABC123',
+    issuedAt: '2024-01-01',
+    expiresAt: needsExpiresAt ? '2030-01-01' : null,
+  );
+}
+
+List<DriverDocument> _allCompleteDocuments() {
+  return requiredDriverOnboardingDocumentTypes.map(_completeDocument).toList();
 }
 
 void main() {
@@ -106,7 +128,8 @@ void main() {
       expect(state.vehicle, isNull);
     });
 
-    test('DRAFT con vehículo → draftWithVehicle, conserva el vehicle', () {
+    test('DRAFT con vehículo y sin documentos (documents: null) → '
+        'draftDocumentsIncomplete, conserva el vehicle', () {
       final vehicle = _vehicle();
 
       final state = resolveDriverApplicationState(
@@ -115,8 +138,79 @@ void main() {
         vehicle: vehicle,
       );
 
-      expect(state.kind, DriverSessionKind.draftWithVehicle);
+      expect(state.kind, DriverSessionKind.draftDocumentsIncomplete);
       expect(state.vehicle, same(vehicle));
+      expect(state.documents, isNull);
+    });
+
+    test('DRAFT con vehículo y documentos vacíos (lista []) → '
+        'draftDocumentsIncomplete', () {
+      final state = resolveDriverApplicationState(
+        user: _user(),
+        application: _application(DriverApplicationStatus.draft),
+        vehicle: _vehicle(),
+        documents: const [],
+      );
+
+      expect(state.kind, DriverSessionKind.draftDocumentsIncomplete);
+    });
+
+    test('DRAFT con vehículo y solo 2 de los 3 documentos completos → '
+        'draftDocumentsIncomplete', () {
+      final documents = [
+        _completeDocument(DriverDocumentType.driverLicense),
+        _completeDocument(DriverDocumentType.soat),
+      ];
+
+      final state = resolveDriverApplicationState(
+        user: _user(),
+        application: _application(DriverApplicationStatus.draft),
+        vehicle: _vehicle(),
+        documents: documents,
+      );
+
+      expect(state.kind, DriverSessionKind.draftDocumentsIncomplete);
+    });
+
+    test('DRAFT con vehículo y un documento requerido incompleto (sin '
+        'documentNumber) → draftDocumentsIncomplete', () {
+      final documents = [
+        _completeDocument(DriverDocumentType.driverLicense),
+        _completeDocument(DriverDocumentType.soat),
+        DriverDocument(
+          id: 'document-vehicle-registration',
+          driverProfileId: 'profile-1',
+          type: DriverDocumentType.vehicleRegistration,
+          status: DriverDocumentStatus.draft,
+          fileObjectKey: 'drivers/profile-1/documents/tiv.jpg',
+        ),
+      ];
+
+      final state = resolveDriverApplicationState(
+        user: _user(),
+        application: _application(DriverApplicationStatus.draft),
+        vehicle: _vehicle(),
+        documents: documents,
+      );
+
+      expect(state.kind, DriverSessionKind.draftDocumentsIncomplete);
+    });
+
+    test('DRAFT con vehículo y los 3 documentos requeridos completos → '
+        'draftDocumentsComplete, conserva vehicle y documents', () {
+      final vehicle = _vehicle();
+      final documents = _allCompleteDocuments();
+
+      final state = resolveDriverApplicationState(
+        user: _user(),
+        application: _application(DriverApplicationStatus.draft),
+        vehicle: vehicle,
+        documents: documents,
+      );
+
+      expect(state.kind, DriverSessionKind.draftDocumentsComplete);
+      expect(state.vehicle, same(vehicle));
+      expect(state.documents, same(documents));
     });
 
     test(

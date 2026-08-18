@@ -8,15 +8,16 @@ import '../../../auth/data/auth_repository.dart';
 import 'driver_onboarding_progress.dart';
 import 'driver_onboarding_scaffold.dart';
 
-/// Foundation de DRAFT con vehículo ya registrado
-/// (`DriverSessionKind.draftWithVehicle`): los pasos "Sobre ti" y "Tu
-/// mototaxi" ya se completaron (`DRIVER-ONBOARDING-R3.4`/`R3.5`) — en
-/// este checkpoint todavía no existen los pasos "Tus documentos"/
-/// "Revisar y enviar", así que ese caso llega aquí como la siguiente
-/// pantalla real disponible (ver `decisiones.md`, "no inventar
-/// lastCompletedStep"). NO_PROFILE y DRAFT-sin-vehículo ya no llegan
+/// Foundation de DRAFT con documentos ya completos
+/// (`DriverSessionKind.draftDocumentsComplete`): "Sobre ti", "Tu
+/// mototaxi" y "Tus documentos" ya se completaron
+/// (`DRIVER-ONBOARDING-R3.4`/`R3.5`/`R3.6`) — en este checkpoint
+/// todavía no existe el paso "Revisar y enviar", así que ese caso
+/// llega aquí como la siguiente pantalla real disponible (ver
+/// `decisiones.md`, "no inventar lastCompletedStep"). NO_PROFILE,
+/// DRAFT-sin-vehículo y DRAFT-con-documentos-incompletos ya no llegan
 /// aquí — van directo a sus pantallas reales ("Sobre ti"/"Tu
-/// mototaxi").
+/// mototaxi"/"Tus documentos").
 class DriverOnboardingStartScreen extends ConsumerWidget {
   const DriverOnboardingStartScreen({super.key});
 
@@ -26,8 +27,9 @@ class DriverOnboardingStartScreen extends ConsumerWidget {
       icon: Icons.assignment_outlined,
       title: 'Completemos tu solicitud',
       subtitle:
-          'Ya registraste los datos de tu mototaxi. El siguiente '
-          'paso será agregar tus documentos.',
+          'Ya completaste tus datos, tu mototaxi y tus documentos. '
+          'En el siguiente paso podrás revisar toda tu información '
+          'antes de enviar tu solicitud.',
       footer: TextButton(
         key: const Key('onboarding-start-logout-button'),
         onPressed: () => _logout(context, ref),
@@ -36,13 +38,13 @@ class DriverOnboardingStartScreen extends ConsumerWidget {
       ),
       children: const [
         SizedBox(height: 4),
-        DriverOnboardingProgress(currentStep: 4),
+        DriverOnboardingProgress(currentStep: 5),
         SizedBox(height: 20),
         DriverOnboardingInfoCard(
-          label: 'PRÓXIMOS PASOS',
+          label: 'PRÓXIMO PASO',
           message:
-              'Tus documentos y Revisar y enviar. Te avisaremos '
-              'apenas puedas continuar.',
+              'Revisar y enviar. Te avisaremos apenas puedas '
+              'continuar.',
         ),
       ],
     );

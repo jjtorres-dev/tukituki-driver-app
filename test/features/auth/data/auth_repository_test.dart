@@ -102,6 +102,36 @@ Map<String, dynamic> _driverProfileJson({
   };
 }
 
+Map<String, dynamic> _driverDocumentJson({
+  required String type,
+  String status = 'DRAFT',
+  bool withFile = true,
+  String? documentNumber = 'ABC123',
+  String? issuedAt = '2024-01-01',
+  String? expiresAt,
+}) {
+  return {
+    'id': 'document-$type',
+    'driverProfileId': 'profile-1',
+    'type': type,
+    'status': status,
+    'fileUrl': null,
+    'fileObjectKey': withFile ? 'drivers/profile-1/documents/$type.jpg' : null,
+    'documentNumber': documentNumber,
+    'issuedAt': issuedAt,
+    'expiresAt': expiresAt,
+    'rejectionReason': null,
+  };
+}
+
+List<Map<String, dynamic>> _allCompleteDocumentsJson() {
+  return [
+    _driverDocumentJson(type: 'DRIVER_LICENSE', expiresAt: '2030-01-01'),
+    _driverDocumentJson(type: 'SOAT', expiresAt: '2030-01-01'),
+    _driverDocumentJson(type: 'VEHICLE_REGISTRATION'),
+  ];
+}
+
 Map<String, dynamic> _driverVehicleJson({String status = 'DRAFT'}) {
   return {
     'id': 'vehicle-1',
@@ -260,6 +290,40 @@ void main() {
     );
   });
 
+  group('AuthRepository.getMyDocuments', () {
+    test('200 con lista vacía → []', () async {
+      final repository = _repositoryWith({
+        'drivers/me/documents': (200, <Map<String, dynamic>>[]),
+      });
+
+      final documents = await repository.getMyDocuments();
+
+      expect(documents, isEmpty);
+    });
+
+    test('200 parsea cada DriverDocument de la lista', () async {
+      final repository = _repositoryWith({
+        'drivers/me/documents': (200, _allCompleteDocumentsJson()),
+      });
+
+      final documents = await repository.getMyDocuments();
+
+      expect(documents, hasLength(3));
+      expect(documents.map((d) => d.id), contains('document-DRIVER_LICENSE'));
+    });
+
+    test('un error se relanza sin envolverlo (nunca 404 aquí)', () async {
+      final repository = _repositoryWith({
+        'drivers/me/documents': (500, {'message': 'boom'}),
+      });
+
+      await expectLater(
+        repository.getMyDocuments(),
+        throwsA(isA<DioException>()),
+      );
+    });
+  });
+
   group('AuthRepository.resolveSessionState', () {
     test(
       'MVP (DRIVER-ONBOARDING-R3.3): teléfono no verificado SÍ llama a '
@@ -354,21 +418,46 @@ void main() {
       );
     });
 
-    test(
-      'DRAFT + vehicle 200 → draftWithVehicle, conserva el vehicle',
-      () async {
-        final repository = _repositoryWith({
-          'auth/me': (200, _meJson()),
-          'drivers/me': (200, _driverProfileJson(status: 'DRAFT')),
-          'drivers/me/vehicle': (200, _driverVehicleJson()),
-        });
+    test('DRAFT + vehicle 200 + documentos vacíos → draftDocumentsIncomplete, '
+        'SÍ consulta drivers/me/documents', () async {
+      final adapter = _ScriptedAdapter({
+        'auth/me': (200, _meJson()),
+        'drivers/me': (200, _driverProfileJson(status: 'DRAFT')),
+        'drivers/me/vehicle': (200, _driverVehicleJson()),
+        'drivers/me/documents': (200, <Map<String, dynamic>>[]),
+      });
+      final dio = Dio()..httpClientAdapter = adapter;
+      final repository = AuthRepository(dio, const FlutterSecureStorage());
 
-        final state = await repository.resolveSessionState();
+      final state = await repository.resolveSessionState();
 
-        expect(state.kind, DriverSessionKind.draftWithVehicle);
-        expect(state.vehicle?.plate, '1234-AB');
-      },
-    );
+      expect(state.kind, DriverSessionKind.draftDocumentsIncomplete);
+      expect(state.vehicle?.plate, '1234-AB');
+      expect(
+        adapter.requestedPaths,
+        containsAll([
+          'auth/me',
+          'drivers/me',
+          'drivers/me/vehicle',
+          'drivers/me/documents',
+        ]),
+      );
+    });
+
+    test('DRAFT + vehicle 200 + los 3 documentos requeridos completos → '
+        'draftDocumentsComplete', () async {
+      final repository = _repositoryWith({
+        'auth/me': (200, _meJson()),
+        'drivers/me': (200, _driverProfileJson(status: 'DRAFT')),
+        'drivers/me/vehicle': (200, _driverVehicleJson()),
+        'drivers/me/documents': (200, _allCompleteDocumentsJson()),
+      });
+
+      final state = await repository.resolveSessionState();
+
+      expect(state.kind, DriverSessionKind.draftDocumentsComplete);
+      expect(state.documents, hasLength(3));
+    });
 
     test('REJECTED → rejected, conserva rejectionReason', () async {
       final repository = _repositoryWith({

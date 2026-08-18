@@ -5,6 +5,7 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import '../../../core/network/api_client.dart';
 import '../../../core/storage/secure_storage.dart';
 import '../../driver/domain/driver_application.dart';
+import '../../driver/domain/driver_document.dart';
 import '../../driver/domain/driver_vehicle.dart';
 import '../domain/authenticated_user.dart';
 import '../domain/driver_session_state.dart';
@@ -160,10 +161,30 @@ class AuthRepository {
     }
   }
 
-  /// Orquesta `getMe()` + `getDriverProfile()` (+ `getVehicle()`
-  /// cuando la solicitud está en DRAFT, para distinguir Paso 3 de
-  /// Paso 4 — ver `DriverSessionKind`) en la única fuente de verdad
-  /// de routing que usan Splash y Login: `resolveDriverApplicationState`.
+  /// `GET drivers/me/documents` — el expediente completo del
+  /// conductor (puede incluir tipos legacy). A diferencia de
+  /// `getDriverProfile`/`getVehicle`, Backend nunca devuelve 404 aquí
+  /// — una lista vacía ya representa "sin documentos". Cualquier
+  /// `DioException` se relanza sin envolver.
+  Future<List<DriverDocument>> getMyDocuments() async {
+    final response = await _dio.get<List<dynamic>>('drivers/me/documents');
+
+    final data = response.data;
+
+    if (data == null) {
+      throw Exception('El backend devolvió una respuesta vacía.');
+    }
+
+    return data
+        .map((item) => DriverDocument.fromJson(item as Map<String, dynamic>))
+        .toList();
+  }
+
+  /// Orquesta `getMe()` + `getDriverProfile()` (+ `getVehicle()` y,
+  /// si el vehículo ya existe, `getMyDocuments()`, para distinguir
+  /// Paso 3 de Paso 4/5 — ver `DriverSessionKind`) en la única fuente
+  /// de verdad de routing que usan Splash y Login:
+  /// `resolveDriverApplicationState`.
   ///
   /// DECISIÓN DE PRODUCTO MVP (`DRIVER-ONBOARDING-R3.3`): siempre se
   /// consulta `drivers/me`, sin importar `isPhoneVerified`. La
@@ -174,14 +195,19 @@ class AuthRepository {
 
     final application = await getDriverProfile();
 
-    final vehicle = application?.status == DriverApplicationStatus.draft
-        ? await getVehicle()
+    final isDraft = application?.status == DriverApplicationStatus.draft;
+
+    final vehicle = isDraft ? await getVehicle() : null;
+
+    final documents = isDraft && vehicle != null
+        ? await getMyDocuments()
         : null;
 
     return resolveDriverApplicationState(
       user: user,
       application: application,
       vehicle: vehicle,
+      documents: documents,
     );
   }
 

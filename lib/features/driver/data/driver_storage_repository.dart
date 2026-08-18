@@ -2,13 +2,39 @@ import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/network/api_client.dart';
+import '../domain/driver_document.dart';
 
 /// Categoría de Storage usada por la foto de perfil de Driver
-/// (`StorageCategory.DRIVER_PROFILE_PHOTO` en Backend). Backend
-/// define más categorías (`DRIVER_LICENSE`, `SOAT`,
-/// `VEHICLE_REGISTRATION`) para los pasos de documentos, fuera de
-/// alcance de este checkpoint — no se modelan todavía.
+/// (`StorageCategory.DRIVER_PROFILE_PHOTO` en Backend).
 const String driverProfilePhotoStorageCategory = 'DRIVER_PROFILE_PHOTO';
+
+/// Categorías de Storage del Paso 4 ("Tus documentos") — mismos
+/// nombres que `DriverDocumentType`, mapeo 1:1 explícito en Backend
+/// (`storage-category.policy.ts`).
+const String driverLicenseStorageCategory = 'DRIVER_LICENSE';
+const String soatStorageCategory = 'SOAT';
+const String vehicleRegistrationStorageCategory = 'VEHICLE_REGISTRATION';
+
+/// Mapea un [DriverDocumentType] objetivo del Paso 4 a su categoría
+/// real de Storage. Solo cubre los 3 tipos que este onboarding puede
+/// crear — los legacy nunca se suben desde aquí.
+String storageCategoryForDriverDocumentType(DriverDocumentType type) {
+  switch (type) {
+    case DriverDocumentType.driverLicense:
+      return driverLicenseStorageCategory;
+    case DriverDocumentType.soat:
+      return soatStorageCategory;
+    case DriverDocumentType.vehicleRegistration:
+      return vehicleRegistrationStorageCategory;
+    case DriverDocumentType.dniFront:
+    case DriverDocumentType.dniBack:
+    case DriverDocumentType.profilePhoto:
+    case DriverDocumentType.unknown:
+      throw ArgumentError(
+        'No hay categoría de Storage para el tipo de documento $type',
+      );
+  }
+}
 
 final driverStorageRepositoryProvider = Provider<DriverStorageRepository>((
   ref,

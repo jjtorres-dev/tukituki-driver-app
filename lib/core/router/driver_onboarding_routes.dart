@@ -27,13 +27,20 @@ class DriverOnboardingRoutes {
 
   /// "Tu mototaxi" — Paso 3: crea el `DriverVehicle` (DRAFT). Solo
   /// `draftNoVehicle` llega aquí — un `DriverVehicle` ya existente
-  /// significa que el Paso 3 ya se completó, así que ese caso va
-  /// directo a [start] (foundation de Paso 4).
+  /// significa que el Paso 3 ya se completó, así que ese caso va a
+  /// [documents] (Paso 4) o [start] según los documentos.
   static const vehicle = '/onboarding/vehicle';
 
-  /// Foundation de DRAFT+vehículo ya registrado en este checkpoint:
-  /// todavía no existen los pasos 4-5, así que ese caso llega a esta
-  /// misma pantalla de inicio (ver `decisiones.md`, "no inventar
+  /// "Tus documentos" — Paso 4: sube licencia/SOAT/tarjeta de
+  /// propiedad y captura su metadata. Solo `draftDocumentsIncomplete`
+  /// llega aquí — los 3 documentos completos significan que el Paso 4
+  /// ya se completó, así que ese caso va directo a [start]
+  /// (foundation de Paso 5).
+  static const documents = '/onboarding/documents';
+
+  /// Foundation de DRAFT con Pasos 2-4 completos en este checkpoint:
+  /// todavía no existe el Paso 5, así que ese caso llega a esta misma
+  /// pantalla de inicio (ver `decisiones.md`, "no inventar
   /// lastCompletedStep").
   static const start = '/onboarding/start';
 
@@ -56,7 +63,9 @@ String routeForDriverSessionKind(DriverSessionKind kind) {
       return DriverOnboardingRoutes.aboutYou;
     case DriverSessionKind.draftNoVehicle:
       return DriverOnboardingRoutes.vehicle;
-    case DriverSessionKind.draftWithVehicle:
+    case DriverSessionKind.draftDocumentsIncomplete:
+      return DriverOnboardingRoutes.documents;
+    case DriverSessionKind.draftDocumentsComplete:
       return DriverOnboardingRoutes.start;
     case DriverSessionKind.rejected:
       return DriverOnboardingRoutes.rejected;
