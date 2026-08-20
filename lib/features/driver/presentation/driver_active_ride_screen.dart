@@ -232,10 +232,14 @@ class _DriverActiveRideScreenState extends ConsumerState<DriverActiveRideScreen>
     }
   }
 
+  /// Cadencia de viaje activo (R4.4B): 3s, distinta de la cadencia
+  /// `Online` sin viaje de `DriverHomeScreen` (10s, sin cambio). El
+  /// guard `_activityInFlight` en `_sendDriverActivity` ya impide que
+  /// un tick nuevo pise una publicación GPS todavía en vuelo.
   void _startActivityTimer() {
     _activityTimer?.cancel();
 
-    _activityTimer = Timer.periodic(const Duration(seconds: 10), (_) {
+    _activityTimer = Timer.periodic(const Duration(seconds: 3), (_) {
       unawaited(_sendDriverActivity());
     });
   }
@@ -441,7 +445,7 @@ class _DriverActiveRideScreenState extends ConsumerState<DriverActiveRideScreen>
   /// guard de "una sola vez" (`_cameraFramed`/`_destinationCameraFramed`),
   /// así que transicionar de un grupo al otro (p.ej. ARRIVED→IN_PROGRESS)
   /// sí produce un segundo encuadre real, pero nunca se repite dentro
-  /// del mismo grupo en cada poll de 3s ni cada heartbeat de 10s.
+  /// del mismo grupo en cada poll de 3s ni cada heartbeat (3s, R4.4B).
   void _maybeFrameCamera() {
     if (!mounted) {
       return;

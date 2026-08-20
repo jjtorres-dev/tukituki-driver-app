@@ -3087,6 +3087,189 @@ void main() {
       );
     });
   });
+
+  group('Checkpoint R4.4B: cadencia GPS de viaje activo (3s)', () {
+    testWidgets(
+      'A: _activityTimer publica heartbeat+GPS cada 3s durante el viaje '
+      'activo (no 10s)',
+      (tester) async {
+        final ride = _rideFixture(status: 'DRIVER_ASSIGNED');
+        final rides = _FakeRidesRepository(activeRideQueue: [ride]);
+        final operations = _FakeOperationsRepository();
+
+        await _pumpActiveRide(tester, rides: rides, operations: operations);
+        await tester.pump();
+        await tester.pump();
+
+        final baseline = operations.updateLocationCalls;
+        expect(baseline, greaterThanOrEqualTo(1));
+
+        await tester.pump(const Duration(seconds: 3));
+        expect(operations.updateLocationCalls, baseline + 1);
+
+        await tester.pump(const Duration(seconds: 3));
+        expect(operations.updateLocationCalls, baseline + 2);
+      },
+    );
+
+    testWidgets(
+      'C: un tick de 3s que cae mientras el fetch GPS anterior sigue en '
+      'vuelo no dispara un segundo fetch concurrente',
+      (tester) async {
+        var fetchCalls = 0;
+
+        driverActiveRideGpsFetcherOverride =
+            ({required requestPermission}) async {
+              fetchCalls++;
+
+              // Solo el primer fetch se demora; el resto resuelve al
+              // instante para no dejar un Timer pendiente al terminar
+              // el test (`_verifyInvariants` de flutter_test).
+              if (fetchCalls == 1) {
+                await Future<void>.delayed(const Duration(seconds: 4));
+              }
+
+              return _fakePosition();
+            };
+
+        final ride = _rideFixture(status: 'DRIVER_ASSIGNED');
+        final rides = _FakeRidesRepository(activeRideQueue: [ride]);
+        final operations = _FakeOperationsRepository();
+
+        await _pumpActiveRide(tester, rides: rides, operations: operations);
+        await tester.pump();
+        await tester.pump();
+
+        expect(fetchCalls, 1);
+        expect(operations.updateLocationCalls, 0);
+
+        // El tick natural de 3s cae mientras el primer fetch (4s) sigue
+        // en vuelo: el guard `_activityInFlight` debe impedir un segundo
+        // fetch concurrente.
+        await tester.pump(const Duration(seconds: 3));
+        expect(fetchCalls, 1);
+        expect(operations.updateLocationCalls, 0);
+
+        // Se resuelve el primer fetch (t=4s) y libera el guard.
+        await tester.pump(const Duration(seconds: 1));
+        expect(operations.updateLocationCalls, 1);
+
+        // Recién el próximo tick natural (t=6s) dispara el segundo fetch,
+        // que esta vez resuelve al instante.
+        await tester.pump(const Duration(seconds: 2));
+        expect(fetchCalls, 2);
+        expect(operations.updateLocationCalls, 2);
+      },
+    );
+
+    testWidgets(
+      'D: un error de GPS libera el guard in-flight para el próximo ciclo '
+      '(no bloquea reintentos futuros)',
+      (tester) async {
+        var fetchCalls = 0;
+
+        driverActiveRideGpsFetcherOverride =
+            ({required requestPermission}) async {
+              fetchCalls++;
+
+              if (fetchCalls == 1) {
+                throw Exception('gps timeout simulado');
+              }
+
+              return _fakePosition();
+            };
+
+        final ride = _rideFixture(status: 'DRIVER_ASSIGNED');
+        final rides = _FakeRidesRepository(activeRideQueue: [ride]);
+        final operations = _FakeOperationsRepository();
+
+        await _pumpActiveRide(tester, rides: rides, operations: operations);
+        await tester.pump();
+        await tester.pump();
+
+        expect(fetchCalls, 1);
+        expect(operations.updateLocationCalls, 0);
+
+        await tester.pump(const Duration(seconds: 3));
+
+        expect(fetchCalls, 2);
+        expect(operations.updateLocationCalls, 1);
+      },
+    );
+
+    testWidgets(
+      'E: dispose cancela _activityTimer (sin más publicaciones GPS tras '
+      'salir de la pantalla)',
+      (tester) async {
+        var fetchCalls = 0;
+
+        driverActiveRideGpsFetcherOverride =
+            ({required requestPermission}) async {
+              fetchCalls++;
+
+              return _fakePosition();
+            };
+
+        final ride = _rideFixture(status: 'DRIVER_ASSIGNED');
+        final rides = _FakeRidesRepository(activeRideQueue: [ride]);
+        final operations = _FakeOperationsRepository();
+
+        await _pumpActiveRide(tester, rides: rides, operations: operations);
+        await tester.pump();
+        await tester.pump();
+
+        final callsBeforeDispose = fetchCalls;
+
+        await tester.pumpWidget(const SizedBox.shrink());
+
+        await tester.pump(const Duration(seconds: 3));
+        await tester.pump(const Duration(seconds: 3));
+
+        expect(fetchCalls, callsBeforeDispose);
+      },
+    );
+
+    testWidgets(
+      'F: tras un fallo de complete (409) que reinicia _activityTimer, cada '
+      'tick de 3s publica una sola vez (sin scheduler duplicado)',
+      (tester) async {
+        final ride = _rideFixture(status: 'IN_PROGRESS');
+        final rides = _FakeRidesRepository(activeRideQueue: [ride, ride])
+          ..completeRideQueue = [
+            _dioError(
+              statusCode: 409,
+              data: const {
+                'message':
+                    'El viaje debe estar en IN_PROGRESS para finalizarse',
+              },
+            ),
+          ];
+        final operations = _FakeOperationsRepository();
+
+        await _pumpActiveRide(tester, rides: rides, operations: operations);
+        await tester.pump();
+
+        await tester.ensureVisible(
+          find.text('Llegué al destino y finalizar viaje'),
+        );
+        await tester.tap(find.text('Llegué al destino y finalizar viaje'));
+        await tester.pump();
+        await tester.tap(find.text('Sí, finalizar viaje'));
+        await tester.pump();
+        await tester.pump();
+
+        expect(find.text('El viaje cambió de estado'), findsOneWidget);
+
+        final baseline = operations.updateLocationCalls;
+
+        await tester.pump(const Duration(seconds: 3));
+        expect(operations.updateLocationCalls, baseline + 1);
+
+        await tester.pump(const Duration(seconds: 3));
+        expect(operations.updateLocationCalls, baseline + 2);
+      },
+    );
+  });
 }
 
 Iterable<String> _visibleTexts(WidgetTester tester) {
