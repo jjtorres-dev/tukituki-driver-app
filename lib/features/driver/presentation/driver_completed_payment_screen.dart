@@ -206,6 +206,7 @@ class _DriverCompletedPaymentScreenState
       onCollectCash: () {
         context.go('/cash-payment/${payment.rideId}');
       },
+      onGoHome: () => context.go('/home'),
     );
   }
 }

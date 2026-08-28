@@ -2145,17 +2145,145 @@ void main() {
       expect(find.text('Cobrar efectivo'), findsOneWidget);
     });
 
-    testWidgets('J: NO muestra CTA si method != CASH', (tester) async {
-      await pumpCompletion(
-        tester,
-        completion: _completionFixture(
-          paymentMethod: 'YAPE',
-          paymentStatus: 'PENDING',
-        ),
-      );
+    testWidgets(
+      'J: method != CASH oculta "Cobrar efectivo" y ofrece "Volver al inicio" '
+      'junto al aviso',
+      (tester) async {
+        await pumpCompletion(
+          tester,
+          completion: _completionFixture(
+            paymentMethod: 'YAPE',
+            paymentStatus: 'PENDING',
+          ),
+        );
 
-      expect(find.text('Cobrar efectivo'), findsNothing);
-    });
+        expect(find.text('Cobrar efectivo'), findsNothing);
+        expect(
+          find.text('Este viaje no se cobra en efectivo desde la app.'),
+          findsOneWidget,
+        );
+        expect(find.text('Volver al inicio'), findsOneWidget);
+      },
+    );
+
+    testWidgets(
+      'J2: CARD (nunca expuesto en el passenger-app, ride viejo) también '
+      'ofrece "Volver al inicio"',
+      (tester) async {
+        await pumpCompletion(
+          tester,
+          completion: _completionFixture(
+            paymentMethod: 'CARD',
+            paymentStatus: 'PENDING',
+          ),
+        );
+
+        expect(find.text('Cobrar efectivo'), findsNothing);
+        expect(find.text('Volver al inicio'), findsOneWidget);
+      },
+    );
+
+    testWidgets(
+      'J3: CASH en estado != PENDING (PAID) ofrece SOLO "Volver al inicio" '
+      '(sin "Cobrar efectivo" ni aviso de no-efectivo)',
+      (tester) async {
+        await pumpCompletion(
+          tester,
+          completion: _completionFixture(
+            paymentMethod: 'CASH',
+            paymentStatus: 'PAID',
+          ),
+        );
+
+        expect(find.text('Cobrar efectivo'), findsNothing);
+        expect(
+          find.text('Este viaje no se cobra en efectivo desde la app.'),
+          findsNothing,
+        );
+        expect(find.text('Volver al inicio'), findsOneWidget);
+      },
+    );
+
+    testWidgets(
+      'J4: CASH + PENDING sigue mostrando "Cobrar efectivo" y NUNCA '
+      '"Volver al inicio"',
+      (tester) async {
+        await pumpCompletion(
+          tester,
+          completion: _completionFixture(
+            paymentMethod: 'CASH',
+            paymentStatus: 'PENDING',
+          ),
+        );
+
+        expect(find.text('Cobrar efectivo'), findsOneWidget);
+        expect(find.text('Volver al inicio'), findsNothing);
+      },
+    );
+
+    testWidgets(
+      'K: "Volver al inicio" (method != CASH) navega a /home con go '
+      '(back stack limpio)',
+      (tester) async {
+        final ride = _rideFixture(status: 'IN_PROGRESS');
+        final rides = _FakeRidesRepository(activeRideQueue: [ride])
+          ..completeRideQueue = [
+            _completionFixture(paymentMethod: 'YAPE', paymentStatus: 'PENDING'),
+          ];
+
+        final router = GoRouter(
+          initialLocation: '/active-ride',
+          routes: [
+            GoRoute(
+              path: '/active-ride',
+              builder: (context, state) => const DriverActiveRideScreen(),
+            ),
+            GoRoute(
+              path: '/home',
+              builder: (context, state) =>
+                  const Scaffold(body: Text('HOME_ROUTE')),
+            ),
+          ],
+        );
+        addTearDown(router.dispose);
+
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [
+              driverRidesRepositoryProvider.overrideWithValue(rides),
+              driverOperationsRepositoryProvider.overrideWithValue(
+                _FakeOperationsRepository(),
+              ),
+            ],
+            child: MaterialApp.router(routerConfig: router),
+          ),
+        );
+        await tester.pump();
+
+        await tester.ensureVisible(
+          find.text('Llegué al destino y finalizar viaje'),
+        );
+        await tester.tap(find.text('Llegué al destino y finalizar viaje'));
+        await tester.pump();
+        await tester.tap(find.text('Sí, finalizar viaje'));
+        await tester.pump();
+        await tester.pump();
+
+        expect(find.text('¡Viaje completado!'), findsOneWidget);
+
+        await tester.ensureVisible(find.text('Volver al inicio'));
+        await tester.tap(find.text('Volver al inicio'));
+        await tester.pumpAndSettle();
+
+        expect(find.text('HOME_ROUTE'), findsOneWidget);
+        expect(find.text('¡Viaje completado!'), findsNothing);
+
+        final navigator = tester.state<NavigatorState>(
+          find.byType(Navigator).first,
+        );
+        expect(navigator.canPop(), isFalse);
+      },
+    );
 
     testWidgets('CTA navega a /cash-payment/:rideId', (tester) async {
       final ride = _rideFixture(status: 'IN_PROGRESS');

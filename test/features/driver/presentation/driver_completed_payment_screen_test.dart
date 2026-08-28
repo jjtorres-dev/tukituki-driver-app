@@ -269,6 +269,89 @@ void main() {
       expect(operations.heartbeatCalls, afterNavigation);
     });
   });
+
+  group('Salida cuando el pago no es efectivo pendiente', () {
+    testWidgets(
+      'restore de un ride no-CASH (YAPE) ofrece "Volver al inicio" '
+      'en vez de dejar al conductor atrapado',
+      (tester) async {
+        final rides = _FakeRidesRepository(
+          pendingPayments: [
+            _pendingPaymentFixture(
+              rideId: 'ride-1',
+              method: 'YAPE',
+              status: 'PENDING',
+            ),
+          ],
+        );
+
+        await _pumpScreen(tester, rideId: 'ride-1', rides: rides);
+        await tester.pump();
+
+        expect(find.text('¡Viaje completado!'), findsOneWidget);
+        expect(find.text('Cobrar efectivo'), findsNothing);
+        expect(find.text('Volver al inicio'), findsOneWidget);
+      },
+    );
+
+    testWidgets(
+      '"Volver al inicio" navega a /home con go (back stack limpio)',
+      (tester) async {
+        final rides = _FakeRidesRepository(
+          pendingPayments: [
+            _pendingPaymentFixture(
+              rideId: 'ride-9',
+              method: 'CARD',
+              status: 'PENDING',
+            ),
+          ],
+        );
+
+        final router = GoRouter(
+          initialLocation: '/completed-payment/ride-9',
+          routes: [
+            GoRoute(
+              path: '/completed-payment/:rideId',
+              builder: (context, state) => DriverCompletedPaymentScreen(
+                rideId: state.pathParameters['rideId']!,
+              ),
+            ),
+            GoRoute(
+              path: '/home',
+              builder: (context, state) =>
+                  const Scaffold(body: Text('HOME_ROUTE')),
+            ),
+          ],
+        );
+        addTearDown(router.dispose);
+
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [
+              driverRidesRepositoryProvider.overrideWithValue(rides),
+              driverOperationsRepositoryProvider.overrideWithValue(
+                _FakeOperationsRepository(),
+              ),
+            ],
+            child: MaterialApp.router(routerConfig: router),
+          ),
+        );
+        await tester.pump();
+
+        await tester.ensureVisible(find.text('Volver al inicio'));
+        await tester.tap(find.text('Volver al inicio'));
+        await tester.pumpAndSettle();
+
+        expect(find.text('HOME_ROUTE'), findsOneWidget);
+        expect(find.text('¡Viaje completado!'), findsNothing);
+
+        final navigator = tester.state<NavigatorState>(
+          find.byType(Navigator).first,
+        );
+        expect(navigator.canPop(), isFalse);
+      },
+    );
+  });
 }
 
 Future<void> _pumpScreen(

@@ -21,6 +21,7 @@ class DriverRideCompletionView extends StatelessWidget {
     required this.paymentMethod,
     required this.paymentStatus,
     required this.onCollectCash,
+    required this.onGoHome,
     super.key,
   });
 
@@ -39,6 +40,11 @@ class DriverRideCompletionView extends StatelessWidget {
   final String paymentStatus;
 
   final VoidCallback onCollectCash;
+
+  /// Salida a Home. Cada llamador la resuelve con su propio
+  /// `context.go('/home')` — esta vista no depende de `go_router`,
+  /// igual que hace con [onCollectCash].
+  final VoidCallback onGoHome;
 
   bool get _isCashPending =>
       paymentMethod == 'CASH' && paymentStatus == 'PENDING';
@@ -126,11 +132,20 @@ class DriverRideCompletionView extends StatelessWidget {
                     child: Text('Cobrar efectivo'),
                   ),
                 )
-              else if (paymentMethod != 'CASH')
+              else if (paymentMethod != 'CASH') ...[
                 const _SafeNotice(
                   text:
                       'Este viaje no se cobra en efectivo desde la app.',
                 ),
+                const SizedBox(height: 12),
+                _GoHomeButton(onPressed: onGoHome),
+              ] else ...[
+                // Efectivo en un estado distinto a PENDING
+                // (PAID/FAILED/VOIDED...): no aplica el aviso de
+                // "no se cobra en efectivo", pero el conductor
+                // igual necesita una salida de esta pantalla.
+                _GoHomeButton(onPressed: onGoHome),
+              ],
             ],
           ),
         ),
@@ -399,6 +414,30 @@ class _PaymentStatusRow extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// "Volver al inicio" — misma presentación que el CTA de cierre de
+/// `DriverCashPaymentScreen` (recibo PAID): `FilledButton.icon`
+/// verde, ícono de casa y label con padding vertical de 16.
+class _GoHomeButton extends StatelessWidget {
+  const _GoHomeButton({required this.onPressed});
+
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    return FilledButton.icon(
+      onPressed: onPressed,
+      style: FilledButton.styleFrom(
+        backgroundColor: DriverPalette.greenPrimary,
+      ),
+      icon: const Icon(Icons.home),
+      label: const Padding(
+        padding: EdgeInsets.symmetric(vertical: 16),
+        child: Text('Volver al inicio'),
       ),
     );
   }

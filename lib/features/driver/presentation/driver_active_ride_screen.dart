@@ -1603,6 +1603,7 @@ class _DriverActiveRideScreenState extends ConsumerState<DriverActiveRideScreen>
       onCollectCash: () {
         context.go('/cash-payment/${completion.rideId}');
       },
+      onGoHome: () => context.go('/home'),
     );
   }
 
