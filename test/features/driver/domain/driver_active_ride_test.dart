@@ -8,6 +8,7 @@ Map<String, dynamic> _baseJson({
   Object? passenger = const _Absent(),
   Object? agreedFare = const _Absent(),
   Object? distanceToOriginMeters = const _Absent(),
+  Object? paymentMethod = const _Absent(),
 }) {
   final json = <String, dynamic>{
     'id': 'ride-1',
@@ -36,6 +37,10 @@ Map<String, dynamic> _baseJson({
 
   if (distanceToOriginMeters is! _Absent) {
     json['distanceToOriginMeters'] = distanceToOriginMeters;
+  }
+
+  if (paymentMethod is! _Absent) {
+    json['paymentMethod'] = paymentMethod;
   }
 
   return json;
@@ -173,6 +178,31 @@ void main() {
       );
 
       expect(ride.originLatitude, isNull);
+    });
+
+    test('H: paymentMethod real se parsea (antes se perdía en el parseo)', () {
+      final ride = DriverActiveRide.fromJson(
+        _baseJson(paymentMethod: 'YAPE'),
+      );
+
+      expect(ride.paymentMethod, 'YAPE');
+    });
+
+    test('H2: paymentMethod ausente queda null, nunca se asume CASH', () {
+      final ride = DriverActiveRide.fromJson(_baseJson());
+
+      expect(ride.paymentMethod, isNull);
+    });
+
+    test('H3: paymentMethod vacío o no-string se trata como null', () {
+      expect(
+        DriverActiveRide.fromJson(_baseJson(paymentMethod: '  ')).paymentMethod,
+        isNull,
+      );
+      expect(
+        DriverActiveRide.fromJson(_baseJson(paymentMethod: 42)).paymentMethod,
+        isNull,
+      );
     });
   });
 }

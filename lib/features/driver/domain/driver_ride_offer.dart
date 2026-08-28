@@ -18,6 +18,7 @@ class DriverRideOffer {
     this.destinationLongitude,
     this.passengerFirstName,
     this.passengerLastNameInitial,
+    this.paymentMethod,
   });
 
   final String id;
@@ -74,6 +75,14 @@ class DriverRideOffer {
   /// (`ride.passenger.lastNameInitial`, p.ej. "L."). Null si Backend no
   /// la entregó — nunca se completa con un placeholder.
   final String? passengerLastNameInitial;
+
+  /// Método de pago REFERENCIAL elegido por el pasajero
+  /// (`ride.paymentMethod`, p.ej. "CASH"/"YAPE"/"PLIN"/"CARD"). No hay
+  /// pasarela: el pasajero le paga directo al conductor, así que este
+  /// dato solo informa *cómo* le van a pagar y el conductor lo ve
+  /// ANTES de aceptar. Null si Backend no lo entregó — deliberadamente
+  /// NUNCA se completa con un valor por defecto tipo "CASH".
+  final String? paymentMethod;
 
   bool get hasProposal => status == 'PROPOSED' && proposedFare != null;
 
@@ -141,6 +150,12 @@ class DriverRideOffer {
       passengerFirstName: _tryParseNonEmptyString(passenger?['firstName']),
       passengerLastNameInitial: _tryParseNonEmptyString(
         passenger?['lastNameInitial'],
+      ),
+      // `DriverRideOfferRideDto` es el objeto `ride`, así que el
+      // método viaja en `ride.paymentMethod`; se acepta también en la
+      // raíz por consistencia con `estimatedFare`/`currency`.
+      paymentMethod: _tryParseNonEmptyString(
+        json['paymentMethod'] ?? ride['paymentMethod'],
       ),
     );
   }

@@ -17,6 +17,7 @@ class DriverActiveRide {
     this.destinationLongitude,
     this.distanceToOriginMeters,
     this.passenger,
+    this.paymentMethod,
   });
 
   final String id;
@@ -44,6 +45,13 @@ class DriverActiveRide {
   final num? distanceToOriginMeters;
 
   final AssignedPassenger? passenger;
+
+  /// Método de pago REFERENCIAL del ride (`paymentMethod` del contrato
+  /// de `GET drivers/me/rides/active`), p.ej. "CASH"/"YAPE"/"PLIN"/
+  /// "CARD". Solo informativo: no hay pasarela, el pasajero le paga
+  /// directo al conductor. Null si Backend no lo entregó — nunca se
+  /// asume "CASH".
+  final String? paymentMethod;
 
   /// Fuente de verdad para "tarifa acordada". Si por una
   /// inconsistencia contractual excepcional `agreedFare` llega null,
@@ -89,8 +97,22 @@ class DriverActiveRide {
       estimatedDurationSeconds: json['estimatedDurationSeconds'] as num? ?? 0,
       distanceToOriginMeters: json['distanceToOriginMeters'] as num?,
       passenger: AssignedPassenger.tryParse(json['passenger']),
+      paymentMethod: _tryParseNonEmptyString(json['paymentMethod']),
     );
   }
+}
+
+/// Ausente, no-string o vacío tras `trim()` se resuelven como `null`
+/// —nunca una cadena vacía silenciosa—, mismo criterio que
+/// `DriverRideOffer`.
+String? _tryParseNonEmptyString(Object? value) {
+  if (value is! String) {
+    return null;
+  }
+
+  final trimmed = value.trim();
+
+  return trimmed.isEmpty ? null : trimmed;
 }
 
 /// Mismo patrón de validación de coordenadas ya usado en Passenger

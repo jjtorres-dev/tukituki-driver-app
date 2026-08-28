@@ -19,6 +19,7 @@ import '../domain/driver_ride_completion.dart';
 import '../domain/driver_ride_waiting.dart';
 import 'driver_cancel_ride_flow.dart';
 import 'driver_home_map.dart';
+import 'driver_payment_method_chip.dart';
 import 'driver_post_ride_presence.dart';
 import 'driver_ride_completion_view.dart';
 
@@ -1743,6 +1744,18 @@ class _DriverActiveRideScreenState extends ConsumerState<DriverActiveRideScreen>
 
                           _FareCard(fare: ride.displayFare),
 
+                          // Método de pago referencial (cómo le van a
+                          // pagar al conductor). No hay pasarela: es
+                          // solo informativo, mismo acento ámbar.
+                          if (DriverPaymentMethodChip.hasMethod(
+                            ride.paymentMethod,
+                          )) ...[
+                            const SizedBox(height: 10),
+                            DriverPaymentMethodChip(
+                              method: ride.paymentMethod,
+                            ),
+                          ],
+
                           const SizedBox(height: 14),
 
                           _PassengerCard(passenger: ride.passenger),
@@ -1880,6 +1893,18 @@ class _DriverActiveRideScreenState extends ConsumerState<DriverActiveRideScreen>
                           const SizedBox(height: 16),
 
                           _FareCard(fare: ride.displayFare),
+
+                          // Método de pago referencial (cómo le van a
+                          // pagar al conductor). No hay pasarela: es
+                          // solo informativo, mismo acento ámbar.
+                          if (DriverPaymentMethodChip.hasMethod(
+                            ride.paymentMethod,
+                          )) ...[
+                            const SizedBox(height: 10),
+                            DriverPaymentMethodChip(
+                              method: ride.paymentMethod,
+                            ),
+                          ],
 
                           const SizedBox(height: 14),
 
@@ -2051,6 +2076,18 @@ class _DriverActiveRideScreenState extends ConsumerState<DriverActiveRideScreen>
                           const SizedBox(height: 16),
 
                           _FareCard(fare: ride.displayFare),
+
+                          // Método de pago referencial (cómo le van a
+                          // pagar al conductor). No hay pasarela: es
+                          // solo informativo, mismo acento ámbar.
+                          if (DriverPaymentMethodChip.hasMethod(
+                            ride.paymentMethod,
+                          )) ...[
+                            const SizedBox(height: 10),
+                            DriverPaymentMethodChip(
+                              method: ride.paymentMethod,
+                            ),
+                          ],
 
                           const SizedBox(height: 14),
 

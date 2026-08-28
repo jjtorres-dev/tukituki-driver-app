@@ -217,4 +217,75 @@ void main() {
       expect(offer.passengerFirstName, isNull);
     });
   });
+
+  group('DriverRideOffer.fromJson paymentMethod (referencial)', () {
+    Map<String, dynamic> jsonWith({
+      Object? ridePaymentMethod = const _Absent(),
+      Object? rootPaymentMethod = const _Absent(),
+    }) {
+      final ride = <String, dynamic>{
+        'origin': {'address': 'Origen'},
+        'destination': {'address': 'Destino'},
+      };
+
+      if (ridePaymentMethod is! _Absent) {
+        ride['paymentMethod'] = ridePaymentMethod;
+      }
+
+      final json = <String, dynamic>{
+        'id': 'offer-1',
+        'rideId': 'ride-1',
+        'status': 'OFFERED',
+        'distanceToOriginMeters': 500,
+        'estimatedFare': '7.00',
+        'passengerOfferFare': '7.00',
+        'currency': 'PEN',
+        'expiresAt': '2030-01-01T00:00:00.000Z',
+        'ride': ride,
+      };
+
+      if (rootPaymentMethod is! _Absent) {
+        json['paymentMethod'] = rootPaymentMethod;
+      }
+
+      return json;
+    }
+
+    test('lee ride.paymentMethod cuando Backend lo entrega ahí', () {
+      final offer = DriverRideOffer.fromJson(
+        jsonWith(ridePaymentMethod: 'YAPE'),
+      );
+
+      expect(offer.paymentMethod, 'YAPE');
+    });
+
+    test('acepta también paymentMethod en la raíz de la oferta', () {
+      final offer = DriverRideOffer.fromJson(
+        jsonWith(rootPaymentMethod: 'PLIN'),
+      );
+
+      expect(offer.paymentMethod, 'PLIN');
+    });
+
+    test('ausente: queda null, nunca se asume CASH', () {
+      final offer = DriverRideOffer.fromJson(jsonWith());
+
+      expect(offer.paymentMethod, isNull);
+    });
+
+    test('vacío o no-string se trata como null', () {
+      expect(
+        DriverRideOffer.fromJson(jsonWith(ridePaymentMethod: '   ')).paymentMethod,
+        isNull,
+      );
+      expect(
+        DriverRideOffer.fromJson(jsonWith(ridePaymentMethod: 123)).paymentMethod,
+        isNull,
+      );
+    });
+  });
+}
+
+class _Absent {
+  const _Absent();
 }

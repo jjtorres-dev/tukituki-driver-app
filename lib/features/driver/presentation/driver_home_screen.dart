@@ -22,6 +22,7 @@ import '../domain/driver_pending_proposal.dart';
 import '../domain/driver_ride_offer.dart';
 import 'driver_counter_offer_dialog.dart';
 import 'driver_home_map.dart';
+import 'driver_payment_method_chip.dart';
 
 /// Estado explícito del Home, independiente del bool `_online`
 /// que ya no alcanza para representar todos los casos reales
@@ -3279,6 +3280,14 @@ class _DriverHomeScreenState extends ConsumerState<DriverHomeScreen>
                   color: DriverPalette.brown,
                 ),
               ),
+            ],
+            // Método de pago referencial: siempre visible en la tarjeta
+            // compacta (sin necesidad de expandirla ni hacer scroll),
+            // porque el conductor lo necesita ANTES de decidir aceptar
+            // o contraofertar.
+            if (DriverPaymentMethodChip.hasMethod(offer.paymentMethod)) ...[
+              const SizedBox(height: 8),
+              DriverPaymentMethodChip(method: offer.paymentMethod, dense: true),
             ],
             const SizedBox(height: 10),
             _buildOfferAddressRow(
