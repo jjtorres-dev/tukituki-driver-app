@@ -7,6 +7,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../../core/router/driver_onboarding_routes.dart';
+import '../../notifications/data/push_message_handler.dart';
+import '../../notifications/data/push_registration_coordinator.dart';
 import '../data/auth_repository.dart';
 
 class DriverSplashScreen extends ConsumerStatefulWidget {
@@ -118,6 +120,38 @@ class _DriverSplashScreenState extends ConsumerState<DriverSplashScreen>
       }
 
       goToDriverSessionRoute(context, state);
+
+      // DRIVER-PUSH-R1 (Etapa 1): registro del dispositivo push, solo
+      // con sesión válida. Best-effort y sin `await` — no debe demorar
+      // ni condicionar la navegación. El coordinador es provider-scoped
+      // (no vive en el `State` de esta pantalla), así que un fallo o
+      // demora aquí es inofensivo. El `.catchError` es defensa extra
+      // por si algún cambio futuro rompe el contrato "nunca lanza" del
+      // coordinador (hoy ya envuelve todo en un try/catch interno).
+      unawaited(
+        ref
+            .read(pushRegistrationCoordinatorProvider)
+            .syncDeviceRegistration()
+            .catchError((Object error) {
+              debugPrint(
+                'DRIVER PUSH - syncDeviceRegistration inesperado: $error',
+              );
+            }),
+      );
+
+      // DRIVER-PUSH-R1 (Etapa 2): arranca el handler que muestra el
+      // aviso local cuando llega una propuesta con la app en
+      // foreground. `start()` es una suscripción síncrona a un stream
+      // (no retorna Future), por eso no lleva `unawaited`. Es
+      // idempotente y best-effort; el try/catch es defensa extra por
+      // si algún cambio futuro rompe el contrato "nunca lanza".
+      try {
+        ref.read(pushMessageHandlerProvider).start();
+      } catch (error) {
+        debugPrint(
+          'DRIVER PUSH - PushMessageHandler.start() falló: $error',
+        );
+      }
     } on DioException catch (error) {
       debugPrint(
         'Error HTTP restaurando sesión Driver: '

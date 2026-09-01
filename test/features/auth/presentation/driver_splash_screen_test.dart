@@ -1,4 +1,7 @@
+import 'dart:async';
+
 import 'package:dio/dio.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
@@ -10,6 +13,12 @@ import 'package:driver/features/auth/domain/authenticated_user.dart';
 import 'package:driver/features/auth/domain/driver_session_state.dart';
 import 'package:driver/features/auth/presentation/driver_splash_screen.dart';
 import 'package:driver/features/driver/domain/driver_application.dart';
+import 'package:driver/features/notifications/data/device_id_store.dart';
+import 'package:driver/features/notifications/data/local_notifications_service.dart';
+import 'package:driver/features/notifications/data/push_message_handler.dart';
+import 'package:driver/features/notifications/data/push_messaging_service.dart';
+import 'package:driver/features/notifications/data/push_registration_coordinator.dart';
+import 'package:driver/features/notifications/data/push_registration_repository.dart';
 
 const _user = AuthenticatedUser(
   id: 'user-1',
@@ -72,6 +81,39 @@ void main() {
     expect(find.text('HOME_ROUTE'), findsOneWidget);
     expect(repository.clearSessionCalls, 0);
   });
+
+  testWidgets(
+    'DRIVER-PUSH-R1: con sesión válida dispara el registro de push, sin esperarlo '
+    '(la navegación se completa aunque el registro nunca termine)',
+    (tester) async {
+      final repository = _FakeAuthRepository(
+        results: [_stateOf(DriverSessionKind.approved)],
+      );
+      final coordinator = _FakePushRegistrationCoordinator(
+        behavior: _CoordinatorBehavior.hangs,
+      );
+      await _pumpSplash(tester, repository, coordinator: coordinator);
+
+      await _finishInitialDelay(tester);
+
+      expect(find.text('HOME_ROUTE'), findsOneWidget);
+      expect(coordinator.syncCalls, 1);
+    },
+  );
+
+  testWidgets(
+    'DRIVER-PUSH-R1: sin sesión NO se intenta registrar el dispositivo',
+    (tester) async {
+      final repository = _FakeAuthRepository(hasSessionResult: false);
+      final coordinator = _FakePushRegistrationCoordinator();
+      await _pumpSplash(tester, repository, coordinator: coordinator);
+
+      await _finishInitialDelay(tester);
+
+      expect(find.text('LOGIN_ROUTE'), findsOneWidget);
+      expect(coordinator.syncCalls, 0);
+    },
+  );
 
   testWidgets(
     'MVP: teléfono no verificado + sin solicitud navega igual al onboarding '
@@ -355,8 +397,9 @@ Future<void> _finishInitialDelay(WidgetTester tester) async {
 
 Future<void> _pumpSplash(
   WidgetTester tester,
-  _FakeAuthRepository repository,
-) async {
+  _FakeAuthRepository repository, {
+  _FakePushRegistrationCoordinator? coordinator,
+}) async {
   final router = GoRouter(
     initialLocation: '/splash',
     routes: [
@@ -422,7 +465,21 @@ Future<void> _pumpSplash(
 
   await tester.pumpWidget(
     ProviderScope(
-      overrides: [authRepositoryProvider.overrideWithValue(repository)],
+      overrides: [
+        authRepositoryProvider.overrideWithValue(repository),
+        // El coordinador real toca FirebaseMessaging.instance, que no
+        // existe en flutter_test. Se reemplaza por un doble no-op salvo
+        // que el test quiera otro comportamiento.
+        pushRegistrationCoordinatorProvider.overrideWithValue(
+          coordinator ?? _FakePushRegistrationCoordinator(),
+        ),
+        // El handler real toca `FirebaseMessaging.onMessage`, ausente
+        // en flutter_test. Doble no-op: el splash solo llama a
+        // `start()` y no depende de su resultado.
+        pushMessageHandlerProvider.overrideWithValue(
+          _FakePushMessageHandler(),
+        ),
+      ],
       child: MaterialApp.router(routerConfig: router),
     ),
   );
@@ -484,5 +541,65 @@ class _FakeAuthRepository extends AuthRepository {
   @override
   Future<void> clearSession() async {
     clearSessionCalls += 1;
+  }
+}
+
+enum _CoordinatorBehavior { noop, hangs }
+
+class _NoopPushMessagingService implements PushMessagingService {
+  @override
+  Future<bool> requestPermission() async => false;
+
+  @override
+  Future<String?> getToken() async => null;
+
+  @override
+  Stream<String> get onTokenRefresh => const Stream<String>.empty();
+}
+
+/// Doble no-op del handler de mensajes push para los tests del splash.
+/// El splash solo invoca `start()`; acá se vuelve inofensivo.
+class _FakePushMessageHandler extends PushMessageHandler {
+  _FakePushMessageHandler()
+    : super(const Stream<RemoteMessage>.empty(), _NoopLocalNotifications());
+
+  int startCalls = 0;
+
+  @override
+  void start() {
+    startCalls += 1;
+  }
+}
+
+class _NoopLocalNotifications implements LocalNotifications {
+  @override
+  Future<void> show({required String title, required String body}) async {}
+}
+
+/// Doble del coordinador de push para los tests del splash: cuenta las
+/// invocaciones y puede simular un fallo o un cuelgue para verificar
+/// que la navegación del splash no depende de él.
+class _FakePushRegistrationCoordinator extends PushRegistrationCoordinator {
+  _FakePushRegistrationCoordinator({
+    this.behavior = _CoordinatorBehavior.noop,
+  }) : super(
+         _NoopPushMessagingService(),
+         DeviceIdStore(const FlutterSecureStorage()),
+         PushRegistrationRepository(Dio()),
+       );
+
+  final _CoordinatorBehavior behavior;
+  int syncCalls = 0;
+
+  @override
+  Future<void> syncDeviceRegistration() async {
+    syncCalls += 1;
+
+    switch (behavior) {
+      case _CoordinatorBehavior.noop:
+        return;
+      case _CoordinatorBehavior.hangs:
+        await Completer<void>().future;
+    }
   }
 }
