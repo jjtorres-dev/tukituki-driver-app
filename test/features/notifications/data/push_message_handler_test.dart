@@ -53,14 +53,14 @@ void main() {
   });
 
   test(
-    "route 'ride-offer' con notification real → show() una vez con ese "
+    "screen 'ride-offer' con notification real → show() una vez con ese "
     'título y cuerpo',
     () async {
       build().start();
 
       messages.add(
         _message(
-          data: {'route': 'ride-offer'},
+          data: {'screen': 'ride-offer'},
           title: 'Viaje a Miraflores',
           body: 'S/ 12.50 · efectivo',
         ),
@@ -74,13 +74,13 @@ void main() {
   );
 
   test(
-    "route 'ride-offer' sin notification → show() con los textos de "
+    "screen 'ride-offer' sin notification → show() con los textos de "
     'fallback',
     () async {
       build().start();
 
       messages.add(
-        _message(data: {'route': 'ride-offer'}, withNotification: false),
+        _message(data: {'screen': 'ride-offer'}, withNotification: false),
       );
       await pumpEventQueue();
 
@@ -91,11 +91,11 @@ void main() {
   );
 
   test(
-    "route 'ride-offer' con notification pero title/body nulos → fallback",
+    "screen 'ride-offer' con notification pero title/body nulos → fallback",
     () async {
       build().start();
 
-      messages.add(_message(data: {'route': 'ride-offer'}));
+      messages.add(_message(data: {'screen': 'ride-offer'}));
       await pumpEventQueue();
 
       expect(localNotifications.calls, hasLength(1));
@@ -104,18 +104,18 @@ void main() {
     },
   );
 
-  test('route con otro valor → show() NO llamado, sin excepción', () async {
+  test('screen con otro valor → show() NO llamado, sin excepción', () async {
     build().start();
 
     messages.add(
-      _message(data: {'route': 'chat-message'}, title: 'x', body: 'y'),
+      _message(data: {'screen': 'chat-message'}, title: 'x', body: 'y'),
     );
     await pumpEventQueue();
 
     expect(localNotifications.calls, isEmpty);
   });
 
-  test('route ausente → show() NO llamado, sin excepción', () async {
+  test('screen ausente → show() NO llamado, sin excepción', () async {
     build().start();
 
     messages.add(_message(data: {'offerId': 'abc'}, title: 'x', body: 'y'));
@@ -140,7 +140,7 @@ void main() {
     handler.start();
 
     messages.add(
-      _message(data: {'route': 'ride-offer'}, title: 'A', body: 'B'),
+      _message(data: {'screen': 'ride-offer'}, title: 'A', body: 'B'),
     );
     await pumpEventQueue();
 
@@ -154,7 +154,7 @@ void main() {
     handler.dispose();
 
     messages.add(
-      _message(data: {'route': 'ride-offer'}, title: 'A', body: 'B'),
+      _message(data: {'screen': 'ride-offer'}, title: 'A', body: 'B'),
     );
     await pumpEventQueue();
 
@@ -170,7 +170,7 @@ void main() {
 
     // Sigue vivo: un 'ride-offer' válido posterior se procesa igual.
     messages.add(
-      _message(data: {'route': 'ride-offer'}, title: 'ok', body: 'sigue vivo'),
+      _message(data: {'screen': 'ride-offer'}, title: 'ok', body: 'sigue vivo'),
     );
     await pumpEventQueue();
 

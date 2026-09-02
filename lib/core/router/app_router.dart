@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../features/auth/domain/driver_session_state.dart';
@@ -18,9 +19,23 @@ import '../../features/driver/presentation/onboarding/driver_onboarding_submit_r
 import '../../features/driver/presentation/onboarding/driver_onboarding_suspended_screen.dart';
 import '../../features/driver/presentation/onboarding/driver_onboarding_vehicle_screen.dart';
 import 'driver_onboarding_routes.dart';
+import 'route_not_found_screen.dart';
 
 final appRouter = GoRouter(
   initialLocation: DriverOnboardingRoutes.splash,
+  // Red de seguridad: cualquier ruta que go_router no pueda resolver
+  // (p. ej. una notificación push que abre la app cerrada con una ruta
+  // inválida) cae en una pantalla con salida real — nunca en el
+  // ErrorScreen por defecto, cuyo botón "Home" apunta a `/`, que no
+  // existe en esta app, y deja al usuario atrapado.
+  errorBuilder: (context, state) {
+    debugPrint(
+      'DRIVER ROUTER - ruta no encontrada: "${state.uri}" '
+      '(${state.error})',
+    );
+
+    return const RouteNotFoundScreen();
+  },
   routes: [
     GoRoute(
       path: DriverOnboardingRoutes.splash,

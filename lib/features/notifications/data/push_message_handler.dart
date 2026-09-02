@@ -79,11 +79,11 @@ class PushMessageHandler {
 
   void _handleMessage(RemoteMessage message) {
     try {
-      final route = message.data['route'];
+      final screen = message.data['screen'];
 
-      if (route != 'ride-offer') {
+      if (screen != 'ride-offer') {
         debugPrint(
-          "DRIVER PUSH - mensaje ignorado (route=$route, se esperaba "
+          "DRIVER PUSH - mensaje ignorado (screen=$screen, se esperaba "
           "'ride-offer')",
         );
         return;
